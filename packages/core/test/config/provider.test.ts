@@ -151,6 +151,39 @@ describe("ConfigProviderPlugin.Plugin", () => {
     }),
   )
 
+  it.effect("enables configured providers without credentials", () =>
+    withEnv({ CONFIGURED_API_KEY: undefined }, () =>
+      Effect.gen(function* () {
+        const catalog = yield* Catalog.Service
+        const integrations = yield* Integration.Service
+        const providerID = ProviderV2.ID.make("configured")
+        const config = Config.Service.of({
+          entries: () =>
+            Effect.succeed([
+              new Config.Document({
+                type: "document",
+                info: decode({
+                  providers: {
+                    configured: {
+                      env: ["CONFIGURED_API_KEY"],
+                      api: { type: "aisdk", package: "@ai-sdk/openai-compatible", url: "https://example.test" },
+                      models: { chat: {} },
+                    },
+                  },
+                }),
+              }),
+            ]),
+        })
+
+        yield* addPlugin(config)
+
+        expect((yield* catalog.provider.get(providerID))?.disabled).toBe(false)
+        expect(yield* integrations.connection.active(Integration.ID.make(providerID))).toBeUndefined()
+        expect((yield* catalog.provider.available()).map((provider) => provider.id)).toContain(providerID)
+      }),
+    ),
+  )
+
   it.effect("loads configured providers and applies later model overrides", () =>
     withEnv({ CUSTOM_API_KEY: "secret" }, () =>
       Effect.gen(function* () {
@@ -246,7 +279,7 @@ describe("ConfigProviderPlugin.Plugin", () => {
           names: ["CUSTOM_API_KEY"],
         })
         expect((yield* integrations.get(Integration.ID.make("custom")))?.name).toBe("Renamed")
-        expect(provider.disabled).toBeUndefined()
+        expect(provider.disabled).toBe(false)
         expect(provider.api).toEqual({ type: "aisdk", package: "custom-sdk", url: "https://example.test" })
         expect(provider.request.headers).toEqual({ first: "first", shared: "last", last: "last" })
         expect(model.api.id).toBe(ModelV2.ID.make("api-chat"))
