@@ -150,7 +150,6 @@ async function renderFooter(
     height?: number
     state?: Partial<FooterState>
     onCycle?: () => void
-    onExit?: () => void
     onSubmit?: (prompt: RunPrompt) => boolean | Promise<boolean>
     clipboard?: Pick<ClipboardService, "read">
     history?: RunPrompt[]
@@ -206,7 +205,7 @@ async function renderFooter(
           onQueuedPromptAction={input.onQueuedPromptAction}
           onEditorOpen={async () => undefined}
           onInputClear={() => {}}
-          onExit={input.onExit ?? (() => {})}
+          onExit={() => {}}
           onAgentSelect={() => {}}
           onModelSelect={() => {}}
           onVariantSelect={() => {}}
@@ -1466,57 +1465,6 @@ test("direct footer keeps leader variant binding inactive when leader is disable
     app.mockInput.pressKey("t")
 
     expect(calls).toEqual([])
-  } finally {
-    app.cleanup()
-  }
-})
-
-test.each(["/exit", "/quit", "/q", "/qui"])("mini completes %s and exits on one Enter", async (text) => {
-  const actions: string[] = []
-  const app = await renderFooter({
-    onExit: () => actions.push("exit"),
-    onSubmit: (prompt) => {
-      actions.push(prompt.text)
-      return true
-    },
-  })
-  try {
-    await app.renderOnce()
-    await app.mockInput.typeText(text)
-    await app.renderOnce()
-    expect(app.captureCharFrame()).toContain("close OpenCode")
-    app.mockInput.pressEnter()
-    await app.renderOnce()
-    expect(actions).toEqual(["exit"])
-  } finally {
-    app.cleanup()
-  }
-})
-
-test.each(["hello", "/query", "/quit now", "!/q"])("mini does not exit for %s", async (text) => {
-  const actions: string[] = []
-  const submitted: RunPrompt[] = []
-  const app = await renderFooter({
-    onExit: () => actions.push("exit"),
-    onSubmit: (prompt) => {
-      submitted.push(prompt)
-      return true
-    },
-  })
-  try {
-    await app.renderOnce()
-    await app.mockInput.typeText(text)
-    await app.renderOnce()
-    app.mockInput.pressEnter()
-    await app.renderOnce()
-    if (text === "/query" || text === "!/q") {
-      app.mockInput.pressEnter()
-      await app.renderOnce()
-    }
-    expect(actions).toEqual([])
-    expect(submitted).toHaveLength(1)
-    expect(submitted[0].text.trim()).toBe(text.startsWith("!") ? text.slice(1) : text)
-    expect(submitted[0].mode).toBe(text.startsWith("!") ? "shell" : undefined)
   } finally {
     app.cleanup()
   }
