@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Tracer } from "effect"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionRunCoordinator } from "@opencode/core/session/run-coordinator"
 import { testEffect } from "./lib/effect"
@@ -26,6 +26,48 @@ describe("SessionRunCoordinator", () => {
       expect(runs).toBe(1)
     }),
   )
+
+  it.effect("captures the trace when each execution starts", () => {
+    const spans: Tracer.NativeSpan[] = []
+    const tracer = Tracer.make({
+      span(options) {
+        const span = new Tracer.NativeSpan(options)
+        spans.push(span)
+        return span
+      },
+    })
+    return Effect.gen(function* () {
+      const coordinator = yield* SessionRunCoordinator.make({
+        drain: (key) => Effect.void.pipe(Effect.withSpan(`drain.${key}`)),
+      }).pipe(Effect.withSpan("boot"))
+
+      yield* Effect.all(
+        [
+          coordinator.run("first").pipe(Effect.withSpan("request.first")),
+          coordinator.run("second").pipe(Effect.withSpan("request.second")),
+        ],
+        { concurrency: "unbounded" },
+      )
+
+      const boot = spans.find((span) => span.name === "boot")
+      const firstRequest = spans.find((span) => span.name === "request.first")
+      const secondRequest = spans.find((span) => span.name === "request.second")
+      const firstDrain = spans.find((span) => span.name === "drain.first")
+      const secondDrain = spans.find((span) => span.name === "drain.second")
+
+      expect(boot).toBeDefined()
+      expect(firstRequest).toBeDefined()
+      expect(secondRequest).toBeDefined()
+      expect(firstDrain).toBeDefined()
+      expect(secondDrain).toBeDefined()
+      expect(firstDrain!.traceId).toBe(firstRequest!.traceId)
+      expect(secondDrain!.traceId).toBe(secondRequest!.traceId)
+      expect(firstDrain!.traceId).not.toBe(boot!.traceId)
+      expect(secondDrain!.traceId).not.toBe(boot!.traceId)
+      expect(firstDrain!.parent._tag === "Some" && firstDrain!.parent.value.spanId).toBe(firstRequest!.spanId)
+      expect(secondDrain!.parent._tag === "Some" && secondDrain!.parent.value.spanId).toBe(secondRequest!.spanId)
+    }).pipe(Effect.provideService(Tracer.Tracer, tracer))
+  })
 
   it.effect("joins a wake-started execution without forcing a successor", () =>
     Effect.gen(function* () {

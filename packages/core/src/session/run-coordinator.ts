@@ -69,7 +69,7 @@ export const make = <Key, E, Reason = never>(options: {
 }): Effect.Effect<Coordinator<Key, E, Reason>, never, Scope.Scope> =>
   Effect.gen(function* () {
     const executions = new Map<Key, Execution<E, Reason>>()
-    const fork = yield* FiberSet.makeRuntime<never, void, never>()
+    const fibers = yield* FiberSet.make<void, never>()
 
     const loop = (key: Key, execution: Execution<E, Reason>, force: boolean): Effect.Effect<void, E> =>
       Effect.suspend(() => options.drain(key, force, execution.scope)).pipe(
@@ -84,40 +84,50 @@ export const make = <Key, E, Reason = never>(options: {
         ),
       )
 
-    const start = (key: Key, force: boolean, scope: Promotable) => {
-      const execution: Execution<E, Reason> = {
-        done: Deferred.makeUnsafe<void, E>(),
-        scope,
-        stopping: false,
-      }
-      executions.set(key, execution)
-      // The leading yield lets `owner` be assigned before the drain can settle, and keeps
-      // failing self-waking executions from growing the stack across successor starts.
-      // Drains start one tick after wake; callers observe progress through events or run.
-      execution.owner = fork(
-        Effect.yieldNow.pipe(
-          Effect.andThen(Effect.uninterruptible(options.started?.(key) ?? Effect.void)),
-          Effect.andThen(loop(key, execution, force)),
-          Effect.onExit((exit) =>
-            Effect.sync(() => {
-              execution.owner = undefined
-            }).pipe(Effect.andThen(options.settled?.(key, exit, execution.interruptionReason) ?? Effect.void)),
+    const start = (key: Key, force: boolean, scope: Promotable): Effect.Effect<Execution<E, Reason>> =>
+      Effect.gen(function* () {
+        const execution: Execution<E, Reason> = {
+          done: Deferred.makeUnsafe<void, E>(),
+          scope,
+          stopping: false,
+        }
+        executions.set(key, execution)
+        const fork = yield* FiberSet.runtime(fibers)<never>()
+        // The leading yield lets `owner` be assigned before the drain can settle, and keeps
+        // failing self-waking executions from growing the stack across successor starts.
+        // Drains start one tick after wake; callers observe progress through events or run.
+        execution.owner = fork(
+          Effect.yieldNow.pipe(
+            Effect.andThen(Effect.uninterruptible(options.started?.(key) ?? Effect.void)),
+            Effect.andThen(loop(key, execution, force)),
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                execution.owner = undefined
+              }).pipe(Effect.andThen(options.settled?.(key, exit, execution.interruptionReason) ?? Effect.void)),
+            ),
+            Effect.onExit((exit) => settle(key, execution, exit)),
+            Effect.exit,
+            Effect.asVoid,
           ),
-          Effect.onExit((exit) => Effect.sync(() => settle(key, execution, exit))),
-          Effect.exit,
-          Effect.asVoid,
-        ),
-      )
-      return execution
-    }
+        )
+        return execution
+      }).pipe(Effect.uninterruptible)
 
     // A doorbell that survives the execution loop (rung after the loop decided to end, or
     // during failure or interruption cleanup) starts a fresh execution for the remaining work.
-    const settle = (key: Key, execution: Execution<E, Reason>, exit: Exit.Exit<void, E>) => {
-      if (execution.pendingWake) start(key, false, execution.pendingWake)
-      else executions.delete(key)
-      Deferred.doneUnsafe(execution.done, exit)
-    }
+    const settle = (key: Key, execution: Execution<E, Reason>, exit: Exit.Exit<void, E>) =>
+      Effect.suspend(() => {
+        const pendingWake = execution.pendingWake
+        if (pendingWake)
+          return start(key, false, pendingWake).pipe(
+            Effect.asVoid,
+            Effect.andThen(Effect.sync(() => Deferred.doneUnsafe(execution.done, exit))),
+          )
+        return Effect.sync(() => {
+          executions.delete(key)
+          Deferred.doneUnsafe(execution.done, exit)
+        })
+      })
 
     const isActive = (key: Key) => Effect.sync(() => executions.has(key))
 
@@ -130,22 +140,23 @@ export const make = <Key, E, Reason = never>(options: {
             return Deferred.await(execution.done).pipe(Effect.ignoreCause, Effect.andThen(run(key)))
           return Deferred.await(execution.done)
         }
-        return Deferred.await(start(key, true, "input").done)
+        return start(key, true, "input").pipe(Effect.flatMap((execution) => Deferred.await(execution.done)))
       })
 
     const wake = (key: Key, scope: Promotable = "input") =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         const execution = executions.get(key)
         if (execution !== undefined) {
           // Coalesced wakes keep the widest scope: "input" subsumes "steer".
-          execution.pendingWake = execution.pendingWake === "input" ? "input" : scope
-          return
+          return Effect.sync(() => {
+            execution.pendingWake = execution.pendingWake === "input" ? "input" : scope
+          })
         }
-        start(key, false, scope)
+        return start(key, false, scope).pipe(Effect.asVoid)
       })
 
     const interrupt = (key: Key, reason?: Reason): Effect.Effect<boolean> =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         const execution = executions.get(key)
         if (execution === undefined || execution.stopping) return false
         if (execution.owner === undefined) {
@@ -162,6 +173,7 @@ export const make = <Key, E, Reason = never>(options: {
         execution.interruptionReason = reason
         // Fire and forget: nobody benefits from waiting out cleanup here, and callers like
         // the interrupt endpoint must acknowledge immediately even when finalizers are slow.
+        const fork = yield* FiberSet.runtime(fibers)<never>()
         fork(Fiber.interrupt(execution.owner))
         return true
       })
