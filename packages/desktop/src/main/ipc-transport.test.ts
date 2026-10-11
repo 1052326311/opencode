@@ -1,13 +1,29 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, mock, test } from "bun:test"
+import { NodeFileSystem, NodePath } from "@effect/platform-node"
 import { EventEmitter } from "node:events"
+import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { MessageChannel } from "node:worker_threads"
 import type { MessagePortMain, WebContents } from "electron"
-import { Effect, Layer, ManagedRuntime, Predicate, Schema, Stream } from "effect"
+import { Effect, Layer, ManagedRuntime, Match, Predicate, Schema, Stream } from "effect"
 import { Rpc, RpcGroup, RpcMessage, RpcServer } from "effect/rpc"
 import { Transferable } from "effect/workers"
 import { omitUndefined } from "../shared/ipc-transport"
 import { FilesOpenFilePicker } from "../shared/ipc-rpc/files"
 import { IpcPortHandoff, IpcServerProtocolLive } from "./ipc-transport"
+
+let selectedFile = ""
+
+mock.module("electron", () => ({
+  app: { getPath: () => tmpdir(), getVersion: () => "test", isPackaged: false, setPath: () => undefined },
+  clipboard: { read: () => [] },
+  crashReporter: { start: () => undefined },
+  dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [selectedFile] }) },
+  nativeImage: { createFromBuffer: () => ({ isEmpty: () => true }) },
+  netLog: { currentlyLogging: false, startLogging: async () => undefined, stopLogging: async () => undefined },
+  shell: { openPath: async () => "", openExternal: async () => undefined, showItemInFolder: () => undefined },
+}))
 
 describe("desktop RPC transport", () => {
   test("decodes renderer payloads whose optional fields are undefined", async () => {
@@ -112,9 +128,77 @@ describe("desktop RPC transport", () => {
     for (const port of [first.port2, second.port2, reloaded.port2]) port.close()
     await runtime.dispose()
   })
+
+  test("returns picker and read size-limit failures to the renderer protocol", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "opencode-attachment-ipc-"))
+    const file = join(directory, "attachment.txt")
+    await writeFile(file, "")
+    selectedFile = file
+
+    const [{ FileRpcs }, { DesktopFiles }, { fileHandlers }, { MAX_ATTACHMENT_BYTES }] = await Promise.all([
+      import("../shared/ipc-rpc"),
+      import("./files"),
+      import("./ipc-handlers/files"),
+      import("./files/attachment-picker"),
+    ])
+
+    const services = DesktopFiles.layer.pipe(Layer.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)))
+
+    const live = RpcServer.layer(FileRpcs, { disableFatalDefects: true }).pipe(
+      Layer.provide(fileHandlers),
+      Layer.provideMerge(IpcServerProtocolLive),
+      Layer.provideMerge(services),
+    )
+
+    const runtime = ManagedRuntime.make(live)
+    const handoff = await runtime.runPromise(IpcPortHandoff)
+    const channel = new MessageChannel()
+    const foreign = new MessageChannel()
+    handoff.bind(sender(1), serverPort(channel.port1))
+    handoff.bind(sender(2), serverPort(foreign.port1))
+
+    try {
+      selectedFile = join(directory, "missing.txt")
+      expect((await call(channel.port2, 0, "FilesOpenFilePicker", { options: { multiple: true } })).exit).toMatchObject(
+        died(expect.anything()),
+      )
+
+      selectedFile = file
+      await truncate(file, MAX_ATTACHMENT_BYTES + 1)
+      expect((await call(channel.port2, 1, "FilesOpenFilePicker", { options: { multiple: true } })).exit).toMatchObject(
+        failed("Selected attachments exceed the 20 MB limit"),
+      )
+
+      await truncate(file, MAX_ATTACHMENT_BYTES)
+      const picked = await call(channel.port2, 2, "FilesOpenFilePicker", { options: { multiple: true } })
+      expect(picked.exit).toMatchObject(
+        success({ files: [{ path: file, name: "attachment.txt", size: MAX_ATTACHMENT_BYTES }] }),
+      )
+
+      const pickedFile = Schema.decodeUnknownSync(PickedFiles)(successfulValue(picked.exit))
+      expect(
+        (await call(foreign.port2, 0, "FilesReadPickedFile", { token: pickedFile.token, path: file })).exit,
+      ).toMatchObject(died(expect.anything()))
+
+      await truncate(file, MAX_ATTACHMENT_BYTES + 1)
+      expect(
+        (await call(channel.port2, 3, "FilesReadPickedFile", { token: pickedFile.token, path: file })).exit,
+      ).toMatchObject(failed("Selected attachments exceed the 20 MB limit"))
+    } finally {
+      channel.port2.close()
+      foreign.port2.close()
+      await runtime.dispose()
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
 })
 
 class TestEvent extends Schema.TaggedClass<TestEvent>()("TestEvent", { value: Schema.String }) {}
+
+const PickedFiles = Schema.Struct({
+  token: Schema.String,
+  files: Schema.Array(Schema.Struct({ path: Schema.String, name: Schema.String, size: Schema.Number })),
+})
 
 const TestRpcs = RpcGroup.make(
   Rpc.make("test.focused", { success: Schema.Boolean }),
@@ -131,6 +215,22 @@ function success<A>(value: A) {
 
 function died<A>(defect: A) {
   return { _tag: "Failure", cause: [{ _tag: "Die", defect }] } as const
+}
+
+function failed(message: string) {
+  return {
+    _tag: "Failure",
+    cause: [{ _tag: "Fail", error: { _tag: "DesktopAttachmentSizeLimit", message } }],
+  } as const
+}
+
+function successfulValue(exit: RpcMessage.ResponseExitEncoded["exit"]) {
+  return Match.value(exit).pipe(
+    Match.when({ _tag: "Success" }, (response) => response.value),
+    Match.orElse(() => {
+      throw new Error("expected successful file picker result")
+    }),
+  )
 }
 
 // Speaks the wire format the way src/renderer/ipc-client.ts does: post a request, ack each chunk,
