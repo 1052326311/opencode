@@ -41,6 +41,69 @@ const usageChunk = (usage: object) => ({
 })
 
 describe("OpenAI-compatible Chat route", () => {
+  it.effect("allocates replay occurrences after formatting and reserves future originals", () =>
+    Effect.gen(function* () {
+      for (const family of ["ordinary-model", "mistral-small", "claude-sonnet", "openai/gpt-4o"]) {
+        const ids = family === "openai/gpt-4o" ? ["a".repeat(41), "a".repeat(40) + "b"] : ["read:0", "read_0"]
+        const messages = [
+          Message.assistant(ids.map((id) => ToolCallPart.make({ id, name: "lookup", input: { id } }))),
+          ...ids.toReversed().map((id) => Message.tool({ id, name: "lookup", result: id })),
+          Message.user("Again"),
+          Message.assistant([ToolCallPart.make({ id: ids[0]!, name: "lookup", input: {} })]),
+          Message.tool({ id: ids[0]!, name: "lookup", result: "again" }),
+          Message.assistant([ToolCallPart.make({ id: "000000000", name: "lookup", input: {} })]),
+          Message.tool({ id: "000000000", name: "lookup", result: "reserved" }),
+        ]
+        const original = JSON.stringify(messages)
+        const input = LLM.request({
+          model: OpenAICompatibleChat.route
+            .with({ provider: "custom", endpoint: { baseURL: "https://test.invalid" } })
+            .model({ id: family }),
+          messages,
+        })
+        const prepared = yield* compileRequest(input)
+        const wire = prepared.body.messages as Array<{ tool_calls?: Array<{ id: string }>; tool_call_id?: string }>
+        const calls = wire.flatMap((message) => message.tool_calls?.map((call) => call.id) ?? [])
+        const results = wire.flatMap((message) => (message.tool_call_id === undefined ? [] : [message.tool_call_id]))
+        expect(new Set(calls).size).toBe(4)
+        expect(calls[0]).toBe(
+          family === "mistral-small"
+            ? "read00000"
+            : family === "claude-sonnet"
+              ? "read_0"
+              : family === "openai/gpt-4o"
+                ? "a".repeat(40)
+                : "read:0",
+        )
+        expect(results).toEqual([calls[1], calls[0], calls[2], calls[3]])
+        expect(calls[3]).toBe("000000000")
+        if (family === "mistral-small") expect(calls.every((id) => /^[a-zA-Z0-9]{9}$/.test(id))).toBe(true)
+        if (family === "claude-sonnet") expect(calls.every((id) => /^[a-zA-Z0-9_-]+$/.test(id))).toBe(true)
+        if (family === "openai/gpt-4o") expect(calls.every((id) => id.length <= 40)).toBe(true)
+        expect((yield* compileRequest(input)).body.messages).toEqual(prepared.body.messages)
+        expect(JSON.stringify(messages)).toBe(original)
+      }
+    }),
+  )
+
+  it.effect("preserves malformed same-assistant duplicate IDs", () =>
+    Effect.gen(function* () {
+      const prepared = yield* compileRequest(
+        LLM.request({
+          model,
+          messages: [
+            Message.assistant([0, 1].map(() => ToolCallPart.make({ id: "duplicate", name: "lookup", input: {} }))),
+            Message.tool({ id: "duplicate", name: "lookup", result: "ambiguous" }),
+          ],
+        }),
+      )
+      expect(prepared.body.messages).toMatchObject([
+        { tool_calls: [{ id: "duplicate" }, { id: "duplicate" }] },
+        { tool_call_id: "duplicate" },
+      ])
+    }),
+  )
+
   it.effect("prepares generic Chat target", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
