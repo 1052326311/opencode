@@ -1,6 +1,6 @@
 export * as SessionRunCoordinator from "./run-coordinator.js"
 
-import { Deferred, Effect, Exit, Fiber, FiberSet, Scope } from "effect"
+import { Context, Deferred, Effect, Exit, Fiber, FiberSet, Option, Scope, Tracer } from "effect"
 import type { Promotable } from "./inbox.js"
 
 /** Serializes execution for each key while allowing different keys to run concurrently. */
@@ -41,7 +41,7 @@ type Execution<E, Reason> = {
   readonly done: Deferred.Deferred<void, E>
   owner?: Fiber.Fiber<void>
   scope: Promotable
-  pendingWake?: Promotable
+  pendingWake?: { scope: Promotable; span: Option.Option<Tracer.AnySpan> }
   stopping: boolean
   interruptionReason?: Reason
 }
@@ -69,14 +69,16 @@ export const make = <Key, E, Reason = never>(options: {
 }): Effect.Effect<Coordinator<Key, E, Reason>, never, Scope.Scope> =>
   Effect.gen(function* () {
     const executions = new Map<Key, Execution<E, Reason>>()
-    const fibers = yield* FiberSet.make<void, never>()
+    const fork = yield* FiberSet.makeRuntime<never, void, never>()
 
     const loop = (key: Key, execution: Execution<E, Reason>, force: boolean): Effect.Effect<void, E> =>
       Effect.suspend(() => options.drain(key, force, execution.scope)).pipe(
         Effect.andThen(
           Effect.suspend(() => {
             if (execution.stopping || execution.pendingWake === undefined) return Effect.void
-            execution.scope = execution.pendingWake
+            execution.scope = execution.pendingWake.scope
+            // Coalesced drains remain in this execution's trace. Only a fresh successor
+            // after settlement adopts the pending wake's span.
             execution.pendingWake = undefined
             // Trampoline so drains that complete synchronously cannot grow the stack.
             return Effect.yieldNow.pipe(Effect.andThen(loop(key, execution, false)))
@@ -84,7 +86,12 @@ export const make = <Key, E, Reason = never>(options: {
         ),
       )
 
-    const start = (key: Key, force: boolean, scope: Promotable): Effect.Effect<Execution<E, Reason>> =>
+    const start = (
+      key: Key,
+      force: boolean,
+      scope: Promotable,
+      span: Option.Option<Tracer.AnySpan>,
+    ): Effect.Effect<Execution<E, Reason>> =>
       Effect.gen(function* () {
         const execution: Execution<E, Reason> = {
           done: Deferred.makeUnsafe<void, E>(),
@@ -92,7 +99,6 @@ export const make = <Key, E, Reason = never>(options: {
           stopping: false,
         }
         executions.set(key, execution)
-        const fork = yield* FiberSet.runtime(fibers)<never>()
         // The leading yield lets `owner` be assigned before the drain can settle, and keeps
         // failing self-waking executions from growing the stack across successor starts.
         // Drains start one tick after wake; callers observe progress through events or run.
@@ -108,6 +114,9 @@ export const make = <Key, E, Reason = never>(options: {
             Effect.onExit((exit) => settle(key, execution, exit)),
             Effect.exit,
             Effect.asVoid,
+            Option.isSome(span)
+              ? Effect.withParentSpan(span.value)
+              : Effect.updateContext(Context.omit(Tracer.ParentSpan)),
           ),
         )
         return execution
@@ -119,7 +128,7 @@ export const make = <Key, E, Reason = never>(options: {
       Effect.suspend(() => {
         const pendingWake = execution.pendingWake
         if (pendingWake)
-          return start(key, false, pendingWake).pipe(
+          return start(key, false, pendingWake.scope, pendingWake.span).pipe(
             Effect.asVoid,
             Effect.andThen(Effect.sync(() => Deferred.doneUnsafe(execution.done, exit))),
           )
@@ -140,19 +149,23 @@ export const make = <Key, E, Reason = never>(options: {
             return Deferred.await(execution.done).pipe(Effect.ignoreCause, Effect.andThen(run(key)))
           return Deferred.await(execution.done)
         }
-        return start(key, true, "input").pipe(Effect.flatMap((execution) => Deferred.await(execution.done)))
+        return Effect.serviceOption(Tracer.ParentSpan).pipe(
+          Effect.flatMap((span) => start(key, true, "input", span)),
+          Effect.flatMap((execution) => Deferred.await(execution.done)),
+        )
       })
 
     const wake = (key: Key, scope: Promotable = "input") =>
-      Effect.suspend(() => {
+      Effect.gen(function* () {
+        const span = yield* Effect.serviceOption(Tracer.ParentSpan)
         const execution = executions.get(key)
         if (execution !== undefined) {
           // Coalesced wakes keep the widest scope: "input" subsumes "steer".
-          return Effect.sync(() => {
-            execution.pendingWake = execution.pendingWake === "input" ? "input" : scope
-          })
+          // If settlement needs a successor, the latest wake owns its trace.
+          execution.pendingWake = { scope: execution.pendingWake?.scope === "input" ? "input" : scope, span }
+          return
         }
-        return start(key, false, scope).pipe(Effect.asVoid)
+        yield* start(key, false, scope, span)
       })
 
     const interrupt = (key: Key, reason?: Reason): Effect.Effect<boolean> =>
@@ -173,7 +186,6 @@ export const make = <Key, E, Reason = never>(options: {
         execution.interruptionReason = reason
         // Fire and forget: nobody benefits from waiting out cleanup here, and callers like
         // the interrupt endpoint must acknowledge immediately even when finalizers are slow.
-        const fork = yield* FiberSet.runtime(fibers)<never>()
         fork(Fiber.interrupt(execution.owner))
         return true
       })
