@@ -375,7 +375,12 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
           title: language.t("prompt.toast.uploadFailed.title"),
           description: composerErrorMessage(language, error),
         }),
-      onError: (error) => showToast(attachmentPickerErrorToast(language, error)),
+      onError: (error) =>
+        showToast({
+          variant: "error",
+          title: language.t("common.requestFailed"),
+          description: composerErrorMessage(language, error),
+        }),
       readClipboardImage: platform.readClipboardImage,
       getPathForFile: platform.getPathForFile,
       onDragCancel: platform.onDragCancel,
@@ -462,19 +467,7 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
   return controller as ComposerModel
 }
 
-type ErrorMessageLanguage = {
-  t: (key: "common.requestFailed") => string
-}
-
-export function attachmentPickerErrorToast(language: ErrorMessageLanguage, cause: unknown) {
-  return {
-    variant: "error" as const,
-    title: language.t("common.requestFailed"),
-    description: composerErrorMessage(language, cause),
-  }
-}
-
-function composerErrorMessage(language: ErrorMessageLanguage, cause: unknown) {
+function composerErrorMessage(language: ReturnType<typeof useLanguage>, cause: unknown) {
   if (Predicate.hasProperty(cause, "message") && Predicate.isString(cause.message)) return cause.message
 
   if (
