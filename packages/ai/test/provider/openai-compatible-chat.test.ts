@@ -43,8 +43,12 @@ const usageChunk = (usage: object) => ({
 describe("OpenAI-compatible Chat route", () => {
   it.effect("allocates replay occurrences after formatting and reserves future originals", () =>
     Effect.gen(function* () {
-      for (const family of ["ordinary-model", "mistral-small", "claude-sonnet", "openai/gpt-4o"]) {
-        const ids = family === "openai/gpt-4o" ? ["a".repeat(41), "a".repeat(40) + "b"] : ["read:0", "read_0"]
+      for (const [family, ids, first, valid] of [
+        ["ordinary-model", ["read:0", "read_0"], "read:0", /^.+$/],
+        ["mistral-small", ["read:0", "read_0"], "read00000", /^[a-zA-Z0-9]{9}$/],
+        ["claude-sonnet", ["read:0", "read_0"], "read_0", /^[a-zA-Z0-9_-]+$/],
+        ["openai/gpt-4o", ["a".repeat(41), "a".repeat(40) + "b"], "a".repeat(40), /^.{1,40}$/],
+      ] as const) {
         const messages = [
           Message.assistant(ids.map((id) => ToolCallPart.make({ id, name: "lookup", input: { id } }))),
           ...ids.toReversed().map((id) => Message.tool({ id, name: "lookup", result: id })),
@@ -66,20 +70,10 @@ describe("OpenAI-compatible Chat route", () => {
         const calls = wire.flatMap((message) => message.tool_calls?.map((call) => call.id) ?? [])
         const results = wire.flatMap((message) => (message.tool_call_id === undefined ? [] : [message.tool_call_id]))
         expect(new Set(calls).size).toBe(4)
-        expect(calls[0]).toBe(
-          family === "mistral-small"
-            ? "read00000"
-            : family === "claude-sonnet"
-              ? "read_0"
-              : family === "openai/gpt-4o"
-                ? "a".repeat(40)
-                : "read:0",
-        )
+        expect(calls[0]).toBe(first)
         expect(results).toEqual([calls[1], calls[0], calls[2], calls[3]])
         expect(calls[3]).toBe("000000000")
-        if (family === "mistral-small") expect(calls.every((id) => /^[a-zA-Z0-9]{9}$/.test(id))).toBe(true)
-        if (family === "claude-sonnet") expect(calls.every((id) => /^[a-zA-Z0-9_-]+$/.test(id))).toBe(true)
-        if (family === "openai/gpt-4o") expect(calls.every((id) => id.length <= 40)).toBe(true)
+        expect(calls.every((id) => valid.test(id))).toBe(true)
         expect((yield* compileRequest(input)).body.messages).toEqual(prepared.body.messages)
         expect(JSON.stringify(messages)).toBe(original)
       }
@@ -101,6 +95,34 @@ describe("OpenAI-compatible Chat route", () => {
         { tool_calls: [{ id: "duplicate" }, { id: "duplicate" }] },
         { tool_call_id: "duplicate" },
       ])
+    }),
+  )
+
+  it.effect("limits malformed ID fallback to its assistant group", () =>
+    Effect.gen(function* () {
+      for (const sizes of [
+        [2, 1, 1],
+        [1, 2, 1],
+      ]) {
+        const prepared = yield* compileRequest(
+          LLM.request({
+            model,
+            messages: sizes.flatMap((size) => [
+              Message.assistant(
+                Array.from({ length: size }, () => ToolCallPart.make({ id: "read:0", name: "lookup", input: {} })),
+              ),
+              Message.tool({ id: "read:0", name: "lookup", result: "ok" }),
+            ]),
+          }),
+        )
+        const wire = prepared.body.messages as Array<{ tool_calls?: Array<{ id: string }>; tool_call_id?: string }>
+        const calls = wire.flatMap((message) => message.tool_calls?.map((call) => call.id) ?? [])
+        const results = wire.flatMap((message) => (message.tool_call_id === undefined ? [] : [message.tool_call_id]))
+        expect(calls).toEqual(
+          sizes[0] === 2 ? ["read:0", "read:0", "000000000", "000000001"] : ["read:0", "read:0", "read:0", "000000000"],
+        )
+        expect(results).toEqual([calls[0], calls[2], calls[3]])
+      }
     }),
   )
 

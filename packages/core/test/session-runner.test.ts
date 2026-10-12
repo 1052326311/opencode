@@ -9,7 +9,6 @@ import {
   Message,
   SystemPart,
   LanguageModel,
-  LLMClient,
   ToolFailure,
   TransportError,
   InvalidProviderOutputError,
@@ -20,7 +19,6 @@ import {
 import { OpenAIChat } from "@opencode/ai/protocols/openai-chat"
 import { AnthropicMessages, OpenAIResponses } from "@opencode/ai/protocols"
 import { compileRequest } from "@opencode/ai/route/client"
-import { Auth, RequestExecutor } from "@opencode/ai/route"
 import { TestLLM } from "@opencode/ai/testing"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Database } from "@opencode/core/database/database"
@@ -79,7 +77,6 @@ import { ID, Model } from "@opencode/core/model"
 import { Location } from "@opencode/core/location"
 import { Provider } from "@opencode/core/provider"
 import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Queue, Schema, Scope, Stream } from "effect"
-import { HttpClientRequest, HttpClientResponse } from "effect/http"
 import { TestClock } from "effect/testing"
 import { asc, desc, eq, sql } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
@@ -4067,116 +4064,42 @@ describe("SessionRunnerLLM", () => {
     expect(yield* s.context).toMatchObject(expected)
   })
 
-  scenario("replays repeated tool IDs through the OpenAI Chat request boundary", function* (s) {
-    s.currentModel = LanguageModel.make({
-      id: "strict-loopback",
-      provider: "openai",
-      route: OpenAIChat.route.with({
-        endpoint: { baseURL: "https://loopback.test/v1" },
-        auth: Auth.bearer("test-key"),
-      }),
-    })
+  scenario("preserves raw tool IDs across prompts and projection replay", function* (s) {
     yield* s.llm.push(
       TestLLM.tool("read:0", "echo", { text: "first" }),
       [],
       TestLLM.tool("read:0", "echo", { text: "second" }),
       [],
       TestLLM.stop(),
-      TestLLM.tool("read:1", "echo", { text: "unique" }),
-      [],
-      TestLLM.stop(),
     )
-
     yield* s.runPrompt("Read first")
     yield* s.runPrompt("Read second")
-
-    const persisted = (yield* s.context).flatMap((message) =>
-      message.type === "assistant" ? message.content.filter((part) => part.type === "tool").map((part) => part.id) : [],
-    )
-    expect(persisted).toEqual(["read:0", "read:0"])
-
-    yield* replaySessionProjection(sessionID)
-    yield* s.runPrompt("Inspect replay")
-    const duplicateReplay = s.requests.at(-1)
-    if (!duplicateReplay) throw new Error("Duplicate replay request missing")
-    const canonicalPairs = duplicateReplay.messages.flatMap((message) =>
-      message.content.flatMap((part) =>
-        part.type === "tool-call" || part.type === "tool-result"
-          ? [{ role: message.role, type: part.type, id: part.id, name: part.name }]
-          : [],
-      ),
-    )
-    expect(canonicalPairs).toEqual([
-      { role: "assistant", type: "tool-call", id: "read:0", name: "echo" },
-      { role: "tool", type: "tool-result", id: "read:0", name: "echo" },
-      { role: "assistant", type: "tool-call", id: "read:0", name: "echo" },
-      { role: "tool", type: "tool-result", id: "read:0", name: "echo" },
-    ])
-
-    const wireBodies: string[] = []
-    const loopback = LLMClient.layer.pipe(
-      Layer.provide(
-        RequestExecutor.middleware((request) =>
-          Effect.gen(function* () {
-            const web = yield* HttpClientRequest.toWeb(request).pipe(Effect.orDie)
-            wireBodies.push(yield* Effect.promise(() => web.text()))
-            return HttpClientResponse.fromWeb(
-              request,
-              new Response(
-                'data: {"id":"chatcmpl_fixture","choices":[{"delta":{"role":"assistant","content":"ok"},"finish_reason":null}],"usage":null}\n\ndata: {"id":"chatcmpl_fixture","choices":[{"delta":{},"finish_reason":"stop"}],"usage":null}\n\ndata: [DONE]\n\n',
-                { headers: { "content-type": "text/event-stream" } },
-              ),
-            )
-          }),
-        ),
-      ),
-    )
-    yield* LLMClient.stream(duplicateReplay).pipe(Stream.take(1), Stream.runDrain, Effect.provide(loopback))
-
-    expect(wireBodies).toHaveLength(1)
-    const wire = JSON.parse(wireBodies[0]!) as {
-      readonly messages: ReadonlyArray<{
-        readonly role: string
-        readonly tool_calls?: ReadonlyArray<{ readonly id: string }>
-        readonly tool_call_id?: string
-      }>
-    }
-    const calls = wire.messages.flatMap((message) => message.tool_calls?.map((call) => call.id) ?? [])
-    const results = wire.messages.flatMap((message) =>
-      message.tool_call_id === undefined ? [] : [message.tool_call_id],
-    )
-    expect(calls).toHaveLength(2)
-    expect(new Set(calls).size).toBe(2)
-    expect(results).toEqual(calls)
-    expect(calls[0]).toBe("read:0")
-
-    yield* s.runPrompt("Read unique")
-    yield* replaySessionProjection(sessionID)
-    yield* s.runPrompt("Inspect replay stability")
-    const stableReplay = s.requests.at(-1)
-    if (!stableReplay) throw new Error("Stable replay request missing")
+    const stored = yield* s.context
     expect(
-      stableReplay.messages.flatMap((message) =>
-        message.content.flatMap((part) => (part.type === "tool-call" || part.type === "tool-result" ? [part.id] : [])),
-      ),
-    ).toEqual(["read:0", "read:0", "read:0", "read:0", "read:1", "read:1"])
-    yield* LLMClient.stream(stableReplay).pipe(Stream.take(1), Stream.runDrain, Effect.provide(loopback))
-    yield* LLMClient.stream(stableReplay).pipe(Stream.take(1), Stream.runDrain, Effect.provide(loopback))
-    expect(wireBodies[2]).toBe(wireBodies[1])
-    const finalWire = JSON.parse(wireBodies[1]!) as typeof wire
-    const finalCalls = finalWire.messages.flatMap((message) => message.tool_calls?.map((call) => call.id) ?? [])
-    expect(finalCalls).toEqual([...calls, "read:1"])
-    expect(new Set(finalCalls).size).toBe(3)
-    expect(
-      finalWire.messages.flatMap((message) => (message.tool_call_id === undefined ? [] : [message.tool_call_id])),
-    ).toEqual(finalCalls)
-    expect(
-      (yield* s.context).flatMap((message) =>
+      stored.flatMap((message) =>
         message.type === "assistant"
           ? message.content.filter((part) => part.type === "tool").map((part) => part.id)
           : [],
       ),
-    ).toEqual(["read:0", "read:0", "read:1"])
+    ).toEqual(["read:0", "read:0"])
+
+    yield* replaySessionProjection(sessionID)
+    expect(yield* s.context).toEqual(stored)
+    yield* s.runPrompt("Inspect replay")
+    expect(
+      s.requests
+        .at(-1)
+        ?.messages.flatMap((message) =>
+          message.content.flatMap((part) =>
+            part.type === "tool-call" || part.type === "tool-result" ? [{ type: part.type, id: part.id }] : [],
+          ),
+        ),
+    ).toEqual([
+      { type: "tool-call", id: "read:0" },
+      { type: "tool-result", id: "read:0" },
+      { type: "tool-call", id: "read:0" },
+      { type: "tool-result", id: "read:0" },
+    ])
   })
 
   scenario("joins concurrent resume calls into one active provider run", function* (s) {

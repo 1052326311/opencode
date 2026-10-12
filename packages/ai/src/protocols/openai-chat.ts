@@ -594,9 +594,6 @@ const lowerMessages = Effect.fnUntraced(function* (request: LLMRequest, options:
   const groups = request.messages.map((message) =>
     message.role === "assistant" ? message.content.filter((part) => part.type === "tool-call") : [],
   )
-  // A raw ID cannot identify an occurrence inside a malformed assistant group.
-  // Preserve existing lowering for that history rather than guessing a pairing.
-  const ambiguous = groups.some((calls) => new Set(calls.map((call) => call.id)).size !== calls.length)
   const reserved = new Set(groups.flatMap((calls) => calls.map((call) => formatToolID(call.id))))
   const used = new Set<string>()
   const groupIDs = new Map<string, string>()
@@ -614,10 +611,16 @@ const lowerMessages = Effect.fnUntraced(function* (request: LLMRequest, options:
   }
   for (const message of request.messages) {
     if (message.role === "user" || message.role === "assistant") groupIDs.clear()
-    if (message.role === "assistant" && !ambiguous) {
-      for (const part of message.content) {
-        if (part.type !== "tool-call") continue
+    if (message.role === "assistant") {
+      const calls = message.content.filter((part) => part.type === "tool-call")
+      // Preserve ambiguous IDs only within this group, without guessing a pairing.
+      const ambiguous = new Set(calls.map((call) => call.id)).size !== calls.length
+      for (const part of calls) {
         const formatted = formatToolID(part.id)
+        if (ambiguous) {
+          used.add(formatted)
+          continue
+        }
         let id = formatted
         // Nine alphanumeric characters satisfy every existing family formatter.
         // Reserve future originals too, so allocation cannot rename a unique call.
