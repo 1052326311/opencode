@@ -811,10 +811,9 @@ describe("Session.create", () => {
       const session = yield* Session.Service
       const parent = yield* session.create({ location })
 
-      expect(yield* session.fork({ sessionID: parent.id }).pipe(Effect.flip)).toMatchObject({
-        _tag: "Session.ForkEmptyError",
-        sessionID: parent.id,
-      })
+      expect(
+        yield* session.fork({ sessionID: parent.id }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "Session.ForkEmptyError", sessionID: parent.id })
     }),
   )
 
