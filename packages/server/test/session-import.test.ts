@@ -1,11 +1,13 @@
 import { expect } from "bun:test"
 import { Session } from "@opencode/schema/session"
+import { SessionTransfer } from "@opencode/schema/session-transfer"
 import { Effect, Schema } from "effect"
 import { it } from "../../core/test/lib/effect"
 import { ServerFetch } from "../src/fetch"
 
 const SessionResponse = Schema.Struct({ data: Schema.toEncoded(Session.Info) })
 const SessionsResponse = Schema.Struct({ data: Schema.Array(Schema.toEncoded(Session.Info)) })
+const TransferResponse = Schema.Struct({ data: Schema.toEncoded(SessionTransfer.Data) })
 
 const setup = Effect.gen(function* () {
   const handler = yield* ServerFetch.make({
@@ -70,3 +72,69 @@ it.live("preserves imported parentID through HTTP import, read, and parent filte
     }).pipe(Effect.scoped),
   )
 })
+
+it.live("omits native compaction context from sanitized HTTP exports", () =>
+  Effect.gen(function* () {
+    const request = yield* setup
+    const template = Schema.decodeUnknownSync(SessionResponse)(yield* request("/api/session", {}))
+    const id = Session.ID.create()
+    const providerContext = {
+      version: 1,
+      provenance: {
+        providerID: "openai",
+        provider: "openai",
+        modelID: "synthetic-model",
+        route: "responses",
+        protocol: "openai-responses",
+        endpoint: "synthetic-endpoint-digest",
+      },
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "checkpoint-only text" },
+            {
+              type: "media",
+              media: { source: { type: "base64", data: "U1lOVEhFVElDLUlNQUdFLTU1NTg1", mediaType: "image/png" } },
+            },
+          ],
+        },
+      ],
+    }
+    yield* request("/api/experimental/session/import", {
+      info: { ...template.data, id },
+      messages: [
+        {
+          id: "msg_checkpoint",
+          type: "compaction",
+          status: "completed",
+          reason: "auto",
+          summary: "private summary",
+          recent: "private recent",
+          providerState: { token: "private state" },
+          providerContext,
+          time: { created: 1 },
+        },
+      ],
+    })
+
+    const path = `/api/experimental/session/${id}/export`
+    const plain = Schema.decodeUnknownSync(TransferResponse)(yield* request(path))
+    expect(plain.data.messages[0]).toMatchObject({
+      summary: "private summary",
+      recent: "private recent",
+      providerState: { token: "private state" },
+      providerContext,
+    })
+
+    const sanitized = Schema.decodeUnknownSync(TransferResponse)(yield* request(`${path}?sanitize=true`))
+    expect(sanitized.data.messages[0]).toMatchObject({
+      summary: "[redacted:compaction-summary:msg_checkpoint]",
+      recent: "[redacted:compaction-recent:msg_checkpoint]",
+      providerState: { redacted: "compaction-provider-state:msg_checkpoint" },
+    })
+    expect(sanitized.data.messages[0]).not.toHaveProperty("providerContext")
+    expect(JSON.stringify(sanitized)).not.toContain("checkpoint-only text")
+    expect(JSON.stringify(sanitized)).not.toContain("U1lOVEhFVElDLUlNQUdFLTU1NTg1")
+  }).pipe(Effect.scoped),
+)

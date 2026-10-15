@@ -1,8 +1,9 @@
 import { describe, expect } from "bun:test"
+import { Media, Message } from "@opencode/ai"
 import { $ } from "bun"
 import fs from "fs/promises"
 import path from "path"
-import { DateTime, Effect, Layer, Stream } from "effect"
+import { DateTime, Effect, Layer, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { Money } from "@opencode/schema/money"
 import { Shell } from "@opencode/schema/shell"
@@ -25,6 +26,7 @@ import { AbsolutePath, RelativePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionProjector } from "@opencode/core/session/projector"
+import { SessionProviderContext } from "@opencode/core/session/provider-context"
 import { SessionExecution } from "@opencode/core/session/execution"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
@@ -809,9 +811,10 @@ describe("Session.create", () => {
       const session = yield* Session.Service
       const parent = yield* session.create({ location })
 
-      expect(
-        yield* session.fork({ sessionID: parent.id }).pipe(Effect.flip),
-      ).toMatchObject({ _tag: "Session.ForkEmptyError", sessionID: parent.id })
+      expect(yield* session.fork({ sessionID: parent.id }).pipe(Effect.flip)).toMatchObject({
+        _tag: "Session.ForkEmptyError",
+        sessionID: parent.id,
+      })
     }),
   )
 
@@ -1274,6 +1277,85 @@ describe("SessionTransfer", () => {
       })
 
       expect((yield* transfer.export({ sessionID: source.id })).messages).toMatchObject([Expected.user("Settled")])
+    }),
+  )
+
+  it.effect("omits native compaction replay data from sanitized exports", () =>
+    Effect.gen(function* () {
+      const session = yield* Session.Service
+      const transfer = yield* SessionTransfer.Service
+      const template = yield* session.create({ location })
+      const sessionID = Session.ID.create()
+      const userID = SessionMessage.ID.create()
+      const runningID = SessionMessage.ID.create()
+      const completedID = SessionMessage.ID.create()
+      const providerContext = SessionProviderContext.encode(
+        {
+          providerID: Provider.ID.make("openai"),
+          provider: "openai",
+          modelID: "synthetic-model",
+          route: "responses",
+          protocol: "openai-responses",
+          endpoint: "synthetic-endpoint-digest",
+        },
+        [
+          Message.user([
+            { type: "text", text: "hidden in checkpoint" },
+            { type: "media", media: Media.base64("U1lOVEhFVElDLUlNQUdFLTU1NTg1", "image/png") },
+          ]),
+        ],
+      )
+      yield* transfer.import({
+        data: {
+          info: { ...template, id: sessionID },
+          messages: [
+            { id: userID, type: "user", text: "visible request", time: { created: DateTime.makeUnsafe(1) } },
+            {
+              id: runningID,
+              type: "compaction",
+              status: "running",
+              reason: "auto",
+              summary: "pending",
+              recent: "pending",
+              time: { created: DateTime.makeUnsafe(2) },
+            },
+            {
+              id: completedID,
+              type: "compaction",
+              status: "completed",
+              reason: "auto",
+              summary: "private summary",
+              recent: "private recent",
+              providerState: { token: "private provider state" },
+              providerContext,
+              time: { created: DateTime.makeUnsafe(3) },
+            },
+          ],
+        },
+        location,
+      })
+
+      const plain = yield* transfer.export({ sessionID })
+      expect(plain.messages.map((message) => message.id)).toEqual([userID, completedID])
+      expect(plain.messages[1]).toMatchObject({
+        summary: "private summary",
+        recent: "private recent",
+        providerState: { token: "private provider state" },
+        providerContext,
+      })
+
+      const sanitized = yield* transfer.export({ sessionID, sanitize: true })
+      expect(sanitized.messages.map((message) => message.id)).toEqual([userID, completedID])
+      expect(sanitized.messages[0]).toMatchObject({ text: `[redacted:text:${userID}]` })
+      expect(sanitized.messages[1]).toMatchObject({
+        summary: `[redacted:compaction-summary:${completedID}]`,
+        recent: `[redacted:compaction-recent:${completedID}]`,
+        providerState: { redacted: `compaction-provider-state:${completedID}` },
+      })
+      const encoded = Schema.encodeSync(SessionTransfer.Data)(sanitized)
+      expect(encoded.messages[1]).not.toHaveProperty("providerContext")
+      expect(JSON.stringify(encoded)).not.toContain("hidden in checkpoint")
+      expect(JSON.stringify(encoded)).not.toContain("U1lOVEhFVElDLUlNQUdFLTU1NTg1")
     }),
   )
 
