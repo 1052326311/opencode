@@ -10,6 +10,8 @@ import { Effect, Schema } from "effect"
 import { FileAccess } from "../../file-access.js"
 import { Git } from "../../git.js"
 import { Permission } from "../../permission.js"
+import { SessionErrors } from "../../session/error.js"
+import { SessionMove } from "../../session/move.js"
 import { Worktree } from "../../worktree.js"
 
 export const RenameInput = Schema.Struct({
@@ -93,7 +95,7 @@ export const Plugin = {
       Effect.sync(() => {
         event.system.push(
           SystemPart.make(
-            "When you create a worktree outside the current working directory and intend to use it as your primary working directory, consider using `execute` to call `tools.opencode.session_move` and make the worktree the session's working directory.",
+            "When you create a worktree outside the current working directory and intend to use it as your primary working directory, wait for the command creating it to finish before using `execute` to call `tools.opencode.session_move`.",
           ),
         )
       })
@@ -130,7 +132,7 @@ export const Plugin = {
         draft.add({
           name: "session_move",
           description:
-            "Move a session to another directory, or omit sessionID to move the current session. The current session moves at the next safe boundary; do not run destination-dependent tools in the same execute call.",
+            "Move a session to another directory, or omit sessionID to move the current session. The destination must exist before this call; wait for its creation command to finish. The current session moves at the next safe boundary; do not run destination-dependent tools in the same execute call.",
           input: MoveInput,
           output: MoveOutput,
           options: { namespace: "opencode", codemode: true, pinned: true },
@@ -147,9 +149,21 @@ export const Plugin = {
                 content: `Moved session ${sessionID} to ${input.directory}.`,
               }
             }).pipe(
-              Effect.mapError(
-                (error) => new ToolFailure({ message: `Unable to move session to ${input.directory}`, error }),
-              ),
+              Effect.catch((error) => {
+                if (error instanceof SessionErrors.NotFoundError)
+                  return Effect.fail(new ToolFailure({ message: `Session not found: ${error.sessionID}`, error }))
+                if (error instanceof SessionMove.DestinationNotFoundError)
+                  return Effect.fail(
+                    new ToolFailure({ message: `Directory does not exist: ${error.directory}`, error }),
+                  )
+                if (error instanceof SessionMove.DestinationNotDirectoryError)
+                  return Effect.fail(new ToolFailure({ message: `Not a directory: ${error.directory}`, error }))
+                if (error instanceof SessionMove.DestinationUnavailableError)
+                  return Effect.fail(
+                    new ToolFailure({ message: `Directory is unavailable: ${error.directory}`, error }),
+                  )
+                return Effect.die(error)
+              }),
             ),
         })
         draft.add({
