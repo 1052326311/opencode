@@ -111,6 +111,20 @@ test("reports rejected CLI config without applying any of its settings", async (
   )
 })
 
+test("reports a malformed CLI config at its line and column", async () => {
+  await using directory = await tmpdir()
+  await Bun.write(path.join(directory.path, "cli.json"), '{\n  "mouse": true,\n  "leader":\n}')
+
+  await run(
+    directory.path,
+    Effect.gen(function* () {
+      const service = yield* Config.Service
+      expect(yield* service.get()).toEqual({})
+      expect(service.diagnostic()).toMatch(/leader: .* at 4:1/)
+    }),
+  )
+})
+
 test("merges inline CLI config content over the global config", async () => {
   await using directory = await tmpdir()
   const file = path.join(directory.path, "cli.json")

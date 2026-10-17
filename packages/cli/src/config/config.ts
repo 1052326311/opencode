@@ -45,7 +45,10 @@ export const layer = Layer.effect(
       const error = errors[0]
       if (error) {
         const field = getLocation(text, error.offset).path.join(".") || "root"
-        return { reason: `${field}: ${printParseErrorCode(error.error)} at offset ${error.offset}` }
+        const lines = text.slice(0, error.offset).split(/\r\n|\r|\n/)
+        return {
+          reason: `${field}: ${printParseErrorCode(error.error)} at ${lines.length}:${lines.at(-1)!.length + 1}`,
+        }
       }
       const record = Option.getOrUndefined(decodeRecord(value))
       return record === undefined ? { reason: "root: expected an object" } : { record }
