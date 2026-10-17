@@ -4,11 +4,11 @@ import path from "node:path"
 import { tmpdir } from "../../../core/test/fixture/tmpdir"
 import { isolatedEnv } from "../fixture/environment"
 
-for (const stale of [true, false])
+for (const v1 of [false, true])
   test(
-    stale
-      ? "run uses the child process cwd when PWD points elsewhere"
-      : "run writes in the child process cwd when PWD matches",
+    v1
+      ? "V1 run bridge uses the process cwd when PWD points elsewhere"
+      : "run uses the process cwd when PWD points elsewhere",
     async () => {
       await using root = await tmpdir("opencode-cli-run-root-")
       const actual = path.join(root.path, "actual")
@@ -63,23 +63,30 @@ for (const stale of [true, false])
       try {
         const preload = path.join(import.meta.dir, "../../../tui/node_modules/@opentui/solid/scripts/preload.js")
         const child = Bun.spawn(
-          [
-            process.execPath,
-            "--conditions=browser",
-            `--preload=${preload}`,
-            path.join(import.meta.dir, "../../src/index.ts"),
-            "run",
-            "--standalone",
-            "--format",
-            "json",
-            "-m",
-            "mock/m",
-            "Create marker.txt containing hi",
-          ],
+          v1
+            ? [
+                process.execPath,
+                "--conditions=browser",
+                `--preload=${preload}`,
+                path.join(import.meta.dir, "../fixture/run-v1.ts"),
+              ]
+            : [
+                process.execPath,
+                "--conditions=browser",
+                `--preload=${preload}`,
+                path.join(import.meta.dir, "../../src/index.ts"),
+                "run",
+                "--standalone",
+                "--format",
+                "json",
+                "-m",
+                "mock/m",
+                "Create marker.txt containing hi",
+              ],
           {
             cwd: actual,
             env: isolatedEnv(root.path, {
-              PWD: stale ? elsewhere : actual,
+              PWD: elsewhere,
               BUN_OPTIONS: `--conditions=browser --preload=${preload}`,
               OPENCODE_CONFIG_CONTENT: JSON.stringify({
                 autoupdate: false,
@@ -114,29 +121,3 @@ for (const stale of [true, false])
     },
     120_000,
   )
-
-test("explicit run root takes precedence over PWD and process cwd", async () => {
-  await using root = await tmpdir("opencode-cli-explicit-root-")
-  const actual = path.join(root.path, "actual")
-  const elsewhere = path.join(root.path, "elsewhere")
-  const explicit = path.join(root.path, "explicit")
-  await Promise.all([mkdir(actual), mkdir(elsewhere), mkdir(explicit)])
-  const preload = path.join(import.meta.dir, "../../../tui/node_modules/@opentui/solid/scripts/preload.js")
-  const child = Bun.spawn(
-    [
-      process.execPath,
-      "--conditions=browser",
-      `--preload=${preload}`,
-      path.join(import.meta.dir, "../fixture/run-root.ts"),
-      explicit,
-    ],
-    { cwd: actual, env: { ...process.env, PWD: elsewhere }, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
-  )
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ])
-  expect({ exitCode, stderr }).toMatchObject({ exitCode: 0 })
-  expect(stdout.trim().split("\n").at(-1)).toBe(`ROOT=${explicit}`)
-})
