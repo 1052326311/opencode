@@ -12,6 +12,7 @@ import { TuiKeybind } from "./keybind"
 export interface Interface {
   readonly path?: string
   readonly get: () => Promise<Info>
+  readonly diagnostic?: () => string | undefined
   readonly update: (update: (draft: any) => void) => Promise<Info>
 }
 

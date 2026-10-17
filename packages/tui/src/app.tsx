@@ -213,6 +213,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   const config = Config.resolve(yield* Effect.tryPromise(() => input.config.get()), {
     terminalSuspend: process.platform !== "win32",
   })
+  const configDiagnostic = input.config.diagnostic?.()
   const options = { baseUrl: input.server.endpoint.url, headers: Service.headers(input.server.endpoint) }
   const api = OpenCode.make(options)
   const location = yield* Effect.tryPromise(() => api.file.list({ location: { directory: process.cwd() } })).pipe(
@@ -387,6 +388,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                           source={createThemeSource(global.config)}
                                                         >
                                                           <ThemeErrorToast />
+                                                          <ConfigDiagnosticToast diagnostic={configDiagnostic} />
                                                           <LocalProvider>
                                                             <PromptStashProvider>
                                                               <DialogProvider>
@@ -1439,4 +1441,13 @@ function App() {
       <Toast />
     </box>
   )
+}
+
+function ConfigDiagnosticToast(props: { diagnostic?: string }) {
+  const toast = useToast()
+  onMount(() => {
+    if (props.diagnostic)
+      toast.show({ variant: "warning", title: "CLI config ignored", message: props.diagnostic, duration: 15_000 })
+  })
+  return null
 }

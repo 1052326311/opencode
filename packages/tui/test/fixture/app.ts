@@ -13,6 +13,7 @@ export async function createAppFixture(
     height?: number
     state?: string
     config?: Config.Info
+    diagnostic?: string
     args?: TuiInput["args"]
     fetch?: FetchHandler
   } = {},
@@ -38,6 +39,7 @@ export async function createAppFixture(
       server: { endpoint: { url: server.url.toString() } },
       config: {
         get: async () => config,
+        diagnostic: () => input.diagnostic,
         update: async (mutate) => {
           const next = structuredClone(config)
           mutate(next)
