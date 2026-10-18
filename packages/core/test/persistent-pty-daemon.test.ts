@@ -128,26 +128,7 @@ it.live("closes a pending subscription socket when acquisition is interrupted", 
     yield* Effect.promise(() => subscribed)
     yield* Fiber.interrupt(fiber)
     expect((yield* Fiber.await(fiber))._tag).toBe("Failure")
-    const closedAfterInterrupt = yield* Effect.promise(() => closedWithin(socket!, 500))
-    if (!closedAfterInterrupt)
-      socket!.write(
-        frame({
-          type: "attached",
-          terminal: terminal(1),
-          role: "observer",
-          generation: 1,
-          requested_offset: 0,
-          available_offset: 0,
-          end_offset: 0,
-          truncated: false,
-          replay_base64: "",
-        }),
-      )
-    const closedAfterLateReply = closedAfterInterrupt || (yield* Effect.promise(() => closedWithin(socket!, 500)))
-    expect({ closedAfterInterrupt, closedAfterLateReply }).toEqual({
-      closedAfterInterrupt: true,
-      closedAfterLateReply: true,
-    })
+    expect(yield* Effect.promise(() => closedWithin(socket!, 500))).toBeTrue()
     expect(delivered).toBeFalse()
     expect(callbacks).toBe(0)
   }),
