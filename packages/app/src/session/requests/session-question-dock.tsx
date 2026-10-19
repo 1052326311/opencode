@@ -162,6 +162,16 @@ export const SessionQuestionDock: Component<{ request: FormInfo; onSubmit: () =>
     setStore("answers", store.tab, next ? [next] : [])
   }
 
+  const resizeInput = (el: HTMLTextAreaElement) => {
+    el.style.height = "0px"
+    el.style.height = `${el.scrollHeight}px`
+  }
+
+  createEffect(() => {
+    input()
+    if (customInput) resizeInput(customInput)
+  })
+
   const measure = () => {
     if (!root) return
 
@@ -715,9 +725,12 @@ export const SessionQuestionDock: Component<{ request: FormInfo; onSubmit: () =>
               <Mark multi={multi()} picked={on()} />
             </button>
             <textarea
-              ref={(el) => (customInput = el)}
+              ref={(el) => {
+                customInput = el
+                resizeInput(el)
+              }}
               class="question-custom-field"
-              rows={2}
+              rows={1}
               dir="auto"
               aria-label={customLabel()}
               placeholder={customLabel()}
@@ -745,7 +758,7 @@ export const SessionQuestionDock: Component<{ request: FormInfo; onSubmit: () =>
 
                 if ((e.metaKey || e.ctrlKey) && !e.altKey) return
 
-                if (e.key !== "Enter" || e.shiftKey || e.isComposing) return
+                if (e.key !== "Enter" || e.shiftKey || e.isComposing || e.keyCode === 229) return
                 e.preventDefault()
                 commitCustom()
               }}

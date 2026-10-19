@@ -115,6 +115,7 @@ test("replies with predefined choices and a multiline custom answer", async ({ p
   const terminal = question.getByRole("checkbox", { name: "Terminal", exact: true })
   const custom = question.getByRole("checkbox", { name: "Type your own answer…", exact: true })
   const input = question.getByRole("textbox", { name: "Type your own answer…", exact: true })
+  const customRow = question.locator('[data-slot="question-option"][data-custom="true"]')
   const cancellations: string[] = []
   page.on("request", (request) => {
     if (
@@ -149,6 +150,21 @@ test("replies with predefined choices and a multiline custom answer", async ({ p
   await expect(files).toBeChecked()
   await expect(terminal).toBeChecked()
 
+  await input.fill("first\nsecond\nthird\nfourth")
+  await expect.poll(() => input.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(1)
+  await expect.poll(() => input.evaluate((el) => el.getBoundingClientRect().height)).toBeGreaterThan(52)
+  await input.fill(Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n"))
+  await expect.poll(() => input.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0)
+  await expect.poll(() => input.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThanOrEqual(124)
+  expect(
+    await input.evaluate((el) => {
+      el.scrollTop = el.scrollHeight
+      return el.scrollTop
+    }),
+  ).toBeGreaterThan(0)
+
+  await input.fill("")
+  await expect.poll(() => customRow.evaluate((el) => el.getBoundingClientRect().height)).toBe(40)
   await input.fill("alpha")
   await page.keyboard.insertText("\nbeta")
   await expect(input).toHaveValue("alpha\nbeta")
@@ -157,6 +173,17 @@ test("replies with predefined choices and a multiline custom answer", async ({ p
   await page.keyboard.insertText("gamma")
   await expect(input).toHaveValue("alpha\nbeta\ngamma")
   await input.dispatchEvent("keydown", { key: "Enter", isComposing: true })
+  await expect(customRow).toHaveAttribute("data-editing", "true")
+  await expect(input).toBeFocused()
+  expect(
+    await input.evaluate((el) => {
+      const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true })
+      Object.defineProperty(event, "keyCode", { value: 229 })
+      el.dispatchEvent(event)
+      return event.keyCode
+    }),
+  ).toBe(229)
+  await expect(customRow).toHaveAttribute("data-editing", "true")
   await expect(input).toBeFocused()
   await input.press("Enter")
   await expect(input).not.toBeFocused()

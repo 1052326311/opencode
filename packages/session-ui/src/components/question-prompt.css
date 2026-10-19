@@ -288,7 +288,7 @@
   [data-slot="question-option"][data-custom="true"] {
     align-items: center;
     block-size: auto;
-    min-block-size: 64px;
+    min-block-size: 40px;
     padding-block: 6px;
     padding-inline: 10px;
 
@@ -338,10 +338,11 @@
     flex: 1;
     inline-size: 100%;
     min-inline-size: 0;
-    block-size: 52px;
-    min-block-size: 52px;
+    block-size: 28px;
+    min-block-size: 28px;
+    max-block-size: 124px;
     align-self: center;
-    padding: 8px 0;
+    padding: 6px 0;
     margin: 0;
     border: 0;
     border-radius: 6px;
@@ -350,6 +351,7 @@
     outline: none;
     opacity: 1;
     transition: none;
+    overflow-y: auto;
 
     resize: none;
     font-family: var(--v2-font-family-sans);
