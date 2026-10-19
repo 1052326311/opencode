@@ -83,7 +83,7 @@ test("shows a pending question dock", async ({ page }) => {
   expect((await reply).postDataJSON()).toEqual({ answer: { q0: "minimal" } })
 })
 
-test("replies with predefined choices and the edited custom multiselect answer", async ({ page }) => {
+test("replies with predefined choices and a multiline custom answer", async ({ page }) => {
   await mockServer(page, {
     forms: [
       {
@@ -149,11 +149,22 @@ test("replies with predefined choices and the edited custom multiselect answer",
   await expect(files).toBeChecked()
   await expect(terminal).toBeChecked()
 
-  await input.fill("Updated custom answer")
+  await input.fill("alpha")
+  await page.keyboard.insertText("\nbeta")
+  await expect(input).toHaveValue("alpha\nbeta")
+  await input.press("Shift+Enter")
+  await expect(input).toHaveValue("alpha\nbeta\n")
+  await page.keyboard.insertText("gamma")
+  await expect(input).toHaveValue("alpha\nbeta\ngamma")
+  await input.dispatchEvent("keydown", { key: "Enter", isComposing: true })
+  await expect(input).toBeFocused()
+  await input.press("Enter")
+  await expect(input).not.toBeFocused()
+  await input.focus()
   await input.press("Escape")
   await expect(input).not.toBeFocused()
   await expect(question.getByRole("button", { name: "Submit", exact: true })).toBeEnabled()
-  await expect(input).toHaveValue("Updated custom answer")
+  await expect(input).toHaveValue("alpha\nbeta\ngamma")
   await expect(custom).toBeChecked()
   await expect(files).toBeChecked()
   await expect(terminal).toBeChecked()
@@ -166,7 +177,7 @@ test("replies with predefined choices and the edited custom multiselect answer",
   )
 
   await question.getByRole("button", { name: "Submit", exact: true }).press("Control+Enter")
-  expect((await reply).postDataJSON()).toEqual({ answer: { q0: ["files", "terminal", "Updated custom answer"] } })
+  expect((await reply).postDataJSON()).toEqual({ answer: { q0: ["files", "terminal", "alpha\nbeta\ngamma"] } })
   expect(cancellations).toEqual([])
 })
 
