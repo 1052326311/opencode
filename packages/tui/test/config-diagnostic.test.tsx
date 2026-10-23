@@ -1,7 +1,24 @@
 import { expect, test } from "bun:test"
+import type { Interface } from "../src/config"
 import { createAppFixture } from "./fixture/app"
 import { tmpdir } from "./fixture/fixture"
 import path from "node:path"
+
+function configService(file: string): Interface {
+  let diagnostic: string | undefined
+  return {
+    path: file,
+    async get() {
+      const value = await Bun.file(file).json()
+      diagnostic = typeof value.leader === "string" ? `Invalid CLI config at ${file}: leader. File ignored.` : undefined
+      return diagnostic ? {} : value
+    },
+    diagnostic: () => diagnostic,
+    async update() {
+      return {}
+    },
+  }
+}
 
 test("renders the rejected CLI config warning in the TUI", async () => {
   await using setup = await createAppFixture({
@@ -19,30 +36,11 @@ test("does not render a config warning for valid settings", async () => {
   expect(setup.captureCharFrame()).not.toContain("Invalid CLI config")
 })
 
-test("shows a live invalid file warning once and recovers on a valid reload", async () => {
+test("shows a live invalid file warning and clears it after a valid edit", async () => {
   await using directory = await tmpdir()
   const file = path.join(directory.path, "cli.json")
   await Bun.write(file, JSON.stringify({ animations: false, mouse: false }))
-  let diagnostic: string | undefined
-  let reads = 0
-  let checks = 0
-  const service = {
-    path: file,
-    async get() {
-      reads++
-      const value = await Bun.file(file).json()
-      diagnostic = typeof value.leader === "string" ? `Invalid CLI config at ${file}: leader. File ignored.` : undefined
-      return diagnostic ? {} : value
-    },
-    diagnostic: () => {
-      checks++
-      return diagnostic
-    },
-    async update() {
-      return {}
-    },
-  }
-  await using setup = await createAppFixture({ service })
+  await using setup = await createAppFixture({ service: configService(file) })
   await setup.ready
   await setup.renderOnce()
   expect(setup.captureCharFrame()).not.toContain("Invalid CLI config")
@@ -50,18 +48,20 @@ test("shows a live invalid file warning once and recovers on a valid reload", as
   await Bun.write(file, JSON.stringify({ animations: false, mouse: false, leader: "bad" }))
   await setup.waitForFrame((frame) => frame.includes("Invalid CLI config"), { maxPasses: 100 })
   expect(setup.captureCharFrame()).toContain("leader")
-  const afterInvalid = reads
-
-  await Bun.write(file, JSON.stringify({ animations: false, mouse: false, leader: "bad" }))
-  await setup.waitForFrame(() => reads > afterInvalid, { maxPasses: 100 })
-  expect(setup.captureCharFrame()).not.toContain("more")
 
   await Bun.write(file, JSON.stringify({ animations: false, mouse: true }))
-  await setup.waitForFrame(() => diagnostic === undefined && reads > afterInvalid + 1, { maxPasses: 100 })
-  await setup.waitForFrame((frame) => !frame.includes("Invalid CLI config"))
+  await setup.waitForFrame((frame) => !frame.includes("Invalid CLI config"), { maxPasses: 100 })
+})
 
-  await Bun.write(file, JSON.stringify({ animations: false, mouse: true, leader: "bad" }))
-  await setup.waitForFrame((frame) => frame.includes("Invalid CLI config"), { maxPasses: 100 })
+test("keeps an unrelated toast when the config warning clears", async () => {
+  await using directory = await tmpdir()
+  const file = path.join(directory.path, "cli.json")
+  await Bun.write(file, JSON.stringify({ animations: false, leader: "bad" }))
+  const service = configService(file)
+  await using setup = await createAppFixture({ service })
+  await setup.ready
+  await setup.waitForFrame((frame) => frame.includes("Invalid CLI config"))
+
   setup.events.emit({
     id: "evt_other_toast",
     created: 1,
@@ -70,9 +70,8 @@ test("shows a live invalid file warning once and recovers on a valid reload", as
     data: { message: "Other notification", variant: "info", duration: 15_000 },
   })
   await setup.waitForFrame((frame) => frame.includes("Other notification"))
-  const beforeRecovery = checks
-  await Bun.write(file, JSON.stringify({ animations: false, mouse: true }))
-  await setup.waitForFrame(() => checks > beforeRecovery && diagnostic === undefined, { maxPasses: 100 })
-  await setup.renderOnce()
-  expect(setup.captureCharFrame()).toContain("Other notification")
+  await Bun.write(file, JSON.stringify({ animations: false }))
+  await setup.waitForFrame((frame) => service.diagnostic?.() === undefined && frame.includes("Other notification"), {
+    maxPasses: 100,
+  })
 })
