@@ -18,7 +18,15 @@ import {
   type ToolResultPart,
 } from "../schema/index.js"
 import type { Media } from "../media.js"
-import { JsonObject, optionalArray, optionalNull, ProviderShared, withUntypedFrames } from "./shared.js"
+import {
+  JsonObject,
+  lenient,
+  optionalArray,
+  optionalNull,
+  optionalNullish,
+  ProviderShared,
+  withUntypedFrames,
+} from "./shared.js"
 import { classifyProviderFailure } from "../provider-error.js"
 import { effortUpdate } from "../effort-updates.js"
 import { OpenResponsesOptions } from "./utils/open-responses-options.js"
@@ -303,21 +311,21 @@ export type OpenResponsesBody = Schema.Schema.Type<typeof OpenResponsesBody>
 
 export const OpenResponsesUsage = Schema.StructWithRest(
   Schema.Struct({
-    input_tokens: Schema.optional(Schema.Number),
+    input_tokens: lenient(Schema.Number),
     input_tokens_details: optionalNull(
       Schema.StructWithRest(
         Schema.Struct({
-          cached_tokens: Schema.optional(Schema.Number),
-          cache_write_tokens: Schema.optional(Schema.Number),
+          cached_tokens: lenient(Schema.Number),
+          cache_write_tokens: lenient(Schema.Number),
         }),
         [JsonObject],
       ),
     ),
-    output_tokens: Schema.optional(Schema.Number),
+    output_tokens: lenient(Schema.Number),
     output_tokens_details: optionalNull(
-      Schema.StructWithRest(Schema.Struct({ reasoning_tokens: Schema.optional(Schema.Number) }), [JsonObject]),
+      Schema.StructWithRest(Schema.Struct({ reasoning_tokens: lenient(Schema.Number) }), [JsonObject]),
     ),
-    total_tokens: Schema.optional(Schema.Number),
+    total_tokens: lenient(Schema.Number),
   }),
   [JsonObject],
 )
@@ -331,17 +339,17 @@ type OpenResponsesUsage = Schema.Schema.Type<typeof OpenResponsesUsage>
 export const StreamItem = Schema.StructWithRest(
   Schema.Struct({
     type: Schema.String,
-    id: Schema.optional(Schema.String),
-    call_id: Schema.optional(Schema.String),
-    name: Schema.optional(Schema.String),
-    namespace: optionalNull(Schema.String),
-    arguments: Schema.optional(Schema.String),
+    id: optionalNullish(Schema.String),
+    call_id: optionalNullish(Schema.String),
+    name: optionalNullish(Schema.String),
+    namespace: optionalNullish(Schema.String),
+    arguments: optionalNullish(Schema.String),
     encrypted_content: optionalNull(Schema.String),
   }),
   [Schema.Record(Schema.String, Schema.Unknown)],
 )
 export type StreamItem = Schema.Schema.Type<typeof StreamItem>
-export type OutputItem = StreamItem & { readonly id: string; readonly namespace?: string }
+export type OutputItem = StreamItem & { readonly id: string }
 
 // Responses-compatible providers put error details at the top level, under `error`, or under
 // `response.error`, and gateways reshape them freely: strings, numeric codes, extra fields. Those
@@ -354,21 +362,22 @@ const asText = (value: unknown) =>
 const TypedEvent = Schema.StructWithRest(
   Schema.Struct({
     type: Schema.String,
-    delta: Schema.optional(Schema.String),
-    arguments: Schema.optional(Schema.String),
-    text: Schema.optional(Schema.String),
+    delta: optionalNullish(Schema.String),
+    arguments: optionalNullish(Schema.String),
+    text: optionalNullish(Schema.String),
+    // Kept strict: item-scoped events always carry an id, so null means a broken stream.
     item_id: Schema.optional(Schema.String),
-    output_index: Schema.optional(Schema.Number),
-    summary_index: Schema.optional(Schema.Number),
+    output_index: optionalNullish(Schema.Number),
+    summary_index: optionalNullish(Schema.Number),
     // OutputItemAdded/Done permit a null item in the Open Responses OpenAPI schema.
     item: optionalNull(StreamItem),
-    response: Schema.optional(
+    response: optionalNullish(
       Schema.StructWithRest(
         Schema.Struct({
-          id: Schema.optional(Schema.String),
+          id: optionalNullish(Schema.String),
           service_tier: optionalNull(Schema.String),
-          incomplete_details: optionalNull(Schema.Struct({ reason: Schema.optional(Schema.String) })),
-          output: Schema.optional(Schema.Array(StreamItem)),
+          incomplete_details: optionalNull(Schema.Struct({ reason: optionalNullish(Schema.String) })),
+          output: optionalNullish(Schema.Array(StreamItem)),
           usage: optionalNull(OpenResponsesUsage),
           error: Schema.optional(Schema.Unknown),
         }),
@@ -467,7 +476,7 @@ export const lowerToolChoice = (protocolName: string, toolChoice: NonNullable<LL
 // provider-defined and does not necessarily identify the item's semantic type.
 const itemID = (providerMetadata: ProviderMetadata | undefined, providerMetadataKey: string) => {
   const metadata = providerMetadata?.[providerMetadataKey]
-  if (!ProviderShared.isRecord(metadata) || typeof metadata.itemId !== "string") return undefined
+  if (!metadata || typeof metadata.itemId !== "string") return undefined
   const separator = metadata.itemId.indexOf("_")
   return separator > 0 && separator < metadata.itemId.length - 1 ? metadata.itemId : undefined
 }
@@ -486,7 +495,7 @@ const lowerToolCall = (part: ToolCallPart, providerMetadataKey: string): OpenRes
 
 const lowerReasoning = (part: ReasoningPart, providerMetadataKey: string): OpenResponsesReasoningInput | undefined => {
   const metadata = part.providerMetadata?.[providerMetadataKey]
-  if (!ProviderShared.isRecord(metadata)) return undefined
+  if (!metadata) return undefined
   const id = itemID(part.providerMetadata, providerMetadataKey)
   const encryptedContent =
     typeof metadata.reasoningEncryptedContent === "string" || metadata.reasoningEncryptedContent === null
@@ -765,7 +774,7 @@ export const lowerConversation = Effect.fnUntraced(function* (
 export const lowerGeneration = (request: LLMRequest, options = OpenResponsesOptions.resolve(request)) => {
   const generation = request.generation
   const cacheKey = ProviderShared.promptCacheKey(request)
-  const parallelToolCalls = resolveParallelToolCalls(request)
+  const parallelToolCalls = resolveParallelToolCalls(request, options)
   return {
     stream: true as const,
     max_output_tokens: generation?.maxTokens,
@@ -793,15 +802,15 @@ export const lowerGeneration = (request: LLMRequest, options = OpenResponsesOpti
   }
 }
 
-export const resolveParallelToolCalls = (request: LLMRequest) => {
-  const configured = OpenResponsesOptions.resolve(request).parallelToolCalls
+export const resolveParallelToolCalls = (request: LLMRequest, options = OpenResponsesOptions.resolve(request)) => {
+  const configured = options.parallelToolCalls
   if (configured !== undefined) return configured
   const disabled = request.toolChoice?.disableParallelToolUse
   return disabled === undefined ? undefined : !disabled
 }
 
-export const allowedToolChoice = (request: LLMRequest) => {
-  const allowed = OpenResponsesOptions.resolve(request).allowedTools
+export const allowedToolChoice = (request: LLMRequest, options = OpenResponsesOptions.resolve(request)) => {
+  const allowed = options.allowedTools
   if (!allowed) return undefined
   return {
     type: "allowed_tools" as const,
@@ -815,12 +824,13 @@ export const fromRequestWithAdapter = Effect.fn("OpenResponses.fromRequestWithAd
   adapter: ProviderAdapter,
 ) {
   const projected = ProviderShared.flattenToolRequest(request)
+  const options = OpenResponsesOptions.resolve(request)
   return {
     ...(yield* lowerConversation(projected.request, adapter)),
-    ...lowerGeneration(request),
+    ...lowerGeneration(request, options),
     tools: projected.tools.length === 0 ? undefined : yield* lowerTools(projected.tools, adapter),
     tool_choice:
-      allowedToolChoice(request) ??
+      allowedToolChoice(request, options) ??
       (request.toolChoice ? yield* lowerToolChoice(adapter.name, request.toolChoice) : undefined),
   }
 })
@@ -854,7 +864,7 @@ export const mapUsage = (usage: OpenResponsesUsage | null | undefined, providerM
 
 const mapFinishReason = (event: Event, hasFunctionCall: boolean): FinishReason => {
   const reason = event.response?.incomplete_details?.reason
-  if (reason === undefined || reason === null) {
+  if (reason === undefined) {
     if (hasFunctionCall) return "tool-calls"
     if (event.type === "response.incomplete") return "unknown"
     return "stop"
@@ -931,8 +941,6 @@ const resolveItem = (
   index: number | undefined,
 ): OutputItem => ({
   ...item,
-  // Some gateways serialize an absent namespace as null.
-  namespace: item.namespace ?? undefined,
   id:
     item.id ??
     (index === undefined ? undefined : state.outputItems[index]) ??
@@ -1014,7 +1022,7 @@ export const onReasoningDelta = (state: ParserState, event: Event, itemID: strin
 // as a single delta unless that summary index already streamed one.
 export const onReasoningDone = (state: ParserState, event: Event, itemID: string): StepResult => {
   const item = state.reasoningItems[itemID]
-  if (!item || typeof event.text !== "string") return [state, NO_EVENTS]
+  if (!item || event.text === undefined) return [state, NO_EVENTS]
   const index = event.summary_index ?? 0
   if (item.deltaIndexes.has(index)) return [state, NO_EVENTS]
   return onReasoningDelta(state, { ...event, delta: event.text }, itemID)

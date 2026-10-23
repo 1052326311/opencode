@@ -1,5 +1,5 @@
 import { Tool } from "@opencode/schema/tool"
-import { Effect, Option, Schema, SchemaGetter } from "effect"
+import { Effect, Option, Predicate, Schema, SchemaGetter, SchemaTransformation } from "effect"
 import { Headers, HttpClientRequest } from "effect/http"
 import { Media } from "../media.js"
 import {
@@ -27,6 +27,17 @@ const isJson = Schema.is(Schema.Json)
 export const JsonObject = Schema.Record(Schema.String, Schema.Unknown)
 export const optionalArray = <const S extends Schema.Top>(schema: S) => Schema.optional(Schema.Array(schema))
 export const optionalNull = <const S extends Schema.Top>(schema: S) => Schema.optional(Schema.NullOr(schema))
+/** Optional provider field where an explicit `null` means absent, so decoding never yields `null`. */
+export const optionalNullish = <const S extends Schema.Top>(schema: S) =>
+  Schema.optional(Schema.NullOr(schema)).pipe(
+    Schema.decodeTo(
+      Schema.optional(Schema.toType(schema)),
+      SchemaTransformation.transformOptional({
+        decode: Option.filter(Predicate.isNotNullish),
+        encode: (value) => value,
+      }),
+    ),
+  )
 /** Optional field whose malformed value decodes to `undefined` instead of failing the enclosing struct. */
 export const lenient = <const S extends Schema.Top>(schema: S) =>
   Schema.optionalKey(

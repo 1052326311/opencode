@@ -5,7 +5,7 @@ import { Vcs } from "@opencode/schema/vcs"
 import { Schema } from "effect"
 import { createContext, createSignal, onCleanup, type JSX, useContext } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
-import { watch } from "fs"
+import { safeWatch } from "../util/watch"
 import path from "path"
 import { TuiKeybind } from "./keybind"
 
@@ -365,7 +365,7 @@ export function ConfigProvider(props: {
   }
   let reload = Promise.resolve()
   const watcher = host?.path
-    ? watch(path.dirname(host.path), () => {
+    ? safeWatch(path.dirname(host.path), () => {
         reload = reload
           .then(async () => {
             const info = await host.get()
@@ -394,4 +394,10 @@ export function useConfig() {
 export function useNewDesigns() {
   const config = useConfig()
   return () => config.data.experimental?.["new-designs"] === true
+}
+
+/** Reactive accessor for the temporary "client-mcp" experiment. */
+export function useClientMcpExperiment() {
+  const config = useConfig()
+  return () => config.data.experimental?.["client-mcp"] === true
 }

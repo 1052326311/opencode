@@ -1,7 +1,7 @@
 export * as Session from "./session.js"
 export * from "./session/schema.js"
 
-import { DateTime, Effect, Layer, Schema, Context, Stream } from "effect"
+import { DateTime, Effect, Layer, Context, Stream } from "effect"
 import { LLMClient } from "@opencode/ai"
 import { ListAnchor, ListCursor, ListFilter } from "@opencode/schema/session"
 import { and, desc, eq } from "drizzle-orm"
@@ -105,6 +105,7 @@ export {
   AttachmentError,
   BusyError,
   CompactionConflictError,
+  ForkEmptyError,
   InboxConflictError,
   InvalidListCursorError,
   MessageDecodeError,
@@ -183,6 +184,8 @@ export interface Interface {
   readonly switchAgent: (input: { sessionID: SessionSchema.ID; agent: Agent.ID }) => Effect.Effect<void, NotFoundError>
   readonly switchModel: (input: { sessionID: SessionSchema.ID; model: Model.Ref }) => Effect.Effect<void, NotFoundError>
   readonly rename: (input: { sessionID: SessionSchema.ID; title: string }) => Effect.Effect<void, NotFoundError>
+  readonly archive: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
+  readonly unarchive: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   readonly setMetadata: (input: {
     sessionID: SessionSchema.ID
     metadata: SessionSchema.Metadata
@@ -265,7 +268,8 @@ const layer = Layer.effect(
     const environments = yield* SessionEnvironment.Service
     const locations = yield* LocationServiceMap.Service
     const sessions = yield* Session.make()
-    const isDurableSessionEvent = Schema.is(SessionEvent.Durable)
+    const isDurableSessionEvent = (item: Bus.LogItem): item is SessionEvent.DurableEvent =>
+      Object.hasOwn(SessionEvent.Durable.cases, item.type)
 
     const result = Service.of({
       create: Effect.fn("Session.create")(function* (input) {
@@ -295,13 +299,7 @@ const layer = Layer.effect(
               // location, so host policies that read them treat the family uniformly.
               metadata: input.metadata ?? parent?.metadata,
               permissions: input.permissions ?? parent?.permissions,
-              model: input.model
-                ? {
-                    id: Model.ID.make(input.model.id),
-                    providerID: input.model.providerID,
-                    variant: input.model.variant,
-                  }
-                : undefined,
+              model: input.model,
             },
             { location },
           )
@@ -465,6 +463,8 @@ const layer = Layer.effect(
       switchAgent: (input) => sessions.forSession(input.sessionID).switchAgent(input),
       switchModel: (input) => sessions.forSession(input.sessionID).switchModel(input),
       rename: (input) => sessions.forSession(input.sessionID).rename(input),
+      archive: (sessionID) => sessions.forSession(sessionID).archive(),
+      unarchive: (sessionID) => sessions.forSession(sessionID).unarchive(),
       setMetadata: (input) => sessions.forSession(input.sessionID).setMetadata(input),
       setPermissions: (input) => sessions.forSession(input.sessionID).setPermissions(input),
       move: moves.move,

@@ -1,4 +1,4 @@
-import { createTestRenderer } from "@opentui/core/testing"
+import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { Effect, FileSystem } from "effect"
 import path from "node:path"
 import { Global } from "@opencode/util/global"
@@ -17,16 +17,20 @@ export async function createAppFixture(
     service?: Config.Interface
     args?: TuiInput["args"]
     fetch?: FetchHandler
+    // A renderer whose owner already set up its terminal, such as the simulation renderer.
+    setup?: TestRendererSetup
   } = {},
 ) {
   const { run } = await import("../../src/app")
   const root = await tmpdir()
-  const setup = await createTestRenderer({
-    width: input.width ?? 100,
-    height: input.height ?? 30,
-    useThread: false,
-    kittyKeyboard: true,
-  })
+  const setup =
+    input.setup ??
+    (await createTestRenderer({
+      width: input.width ?? 100,
+      height: input.height ?? 30,
+      kittyKeyboard: true,
+    }))
+  if (!input.setup) await setup.renderer.setupTerminal()
   setup.renderer.start()
   const ready = Promise.withResolvers<void>()
   const events = createEventStream()
