@@ -1,3 +1,4 @@
+import type { OpenCodeEvent } from "@opencode/client/promise"
 import { expect, test, type Page } from "@playwright/test"
 import { SERVER, sessionHref } from "../utils/app"
 import { installSseTransport } from "../utils/sse-transport"
@@ -79,7 +80,7 @@ test("shows a pending question dock", async ({ page }) => {
       new URL(request.url()).pathname === `/api/session/${sessionID}/form/frm_question_request/reply`,
   )
 
-  await question.getByRole("button", { name: "Submit" }).click()
+  await question.getByRole("button", { name: "Submit" }).press("Control+Enter")
   expect((await reply).postDataJSON()).toEqual({ answer: { q0: "minimal" } })
 })
 
@@ -127,10 +128,11 @@ test("replies with predefined choices and a multiline custom answer", async ({ p
 
   await expect(files).not.toBeChecked()
   await files.click()
+  await files.press("2")
+  await expect(terminal).toBeChecked()
   await input.fill("Original custom answer")
   await expect(custom).toBeChecked()
   await expect(files).toBeChecked()
-  await terminal.click()
   await expect(terminal).toBeChecked()
   await expect(custom).toBeChecked()
   await expect(files).toBeChecked()
@@ -147,6 +149,10 @@ test("replies with predefined choices and a multiline custom answer", async ({ p
   await custom.click()
   await expect(custom).toBeChecked()
   await expect(input).toHaveValue("Original custom answer")
+  await expect(files).toBeChecked()
+  await expect(terminal).toBeChecked()
+  await input.press("1")
+  await expect(input).toHaveValue("Original custom answer1")
   await expect(files).toBeChecked()
   await expect(terminal).toBeChecked()
 
@@ -175,9 +181,6 @@ test("replies with predefined choices and a multiline custom answer", async ({ p
   })
   await expect(customRow).toHaveAttribute("data-editing", "true")
   await expect(input).toBeFocused()
-  await input.press("Enter")
-  await expect(input).not.toBeFocused()
-  await input.focus()
   await input.press("Escape")
   await expect(input).not.toBeFocused()
   await expect(question.getByRole("button", { name: "Submit", exact: true })).toBeEnabled()
@@ -193,7 +196,8 @@ test("replies with predefined choices and a multiline custom answer", async ({ p
       new URL(request.url()).pathname === `/api/session/${sessionID}/form/frm_question_multiselect/reply`,
   )
 
-  await question.getByRole("button", { name: "Submit", exact: true }).press("Control+Enter")
+  await input.focus()
+  await input.press("Enter")
   expect((await reply).postDataJSON()).toEqual({ answer: { q0: ["files", "terminal", "alpha\nbeta\ngamma"] } })
   expect(cancellations).toEqual([])
 })
@@ -235,6 +239,67 @@ test("shows a pending permission dock", async ({ page }) => {
   expect(replies).toEqual([{ sessionID, permissionID: "permission-request", body: { decision: "once" } }])
   await expect(permission).toHaveCount(0)
   await expect(page.locator('[data-component="composer"]')).toBeVisible()
+})
+
+test("loads a running subagent's question without polling idle subagents on every update", async ({ page }) => {
+  const runningID = "ses_request_running_subagent"
+  const idleIDs = Array.from({ length: 20 }, (_, index) => `ses_request_idle_${index}`)
+
+  const workspace = await mockWorkspace(page, {
+    name: "RequestDocks",
+    directory,
+    sessions: [
+      { id: sessionID, title },
+      { id: runningID, title: "Running subagent", parentID: sessionID },
+      ...idleIDs.map((id) => ({ id, title: id, parentID: sessionID })),
+    ],
+    seed: { tabs: [sessionID] },
+    // The mock reports a Session with a pending form as running.
+    forms: [
+      {
+        id: "frm_subagent_question",
+        sessionID: runningID,
+        title: "Questions",
+        metadata: { kind: "question" },
+        fields: [{ key: "q0", type: "string", title: "Direction", description: "Which way should the subagent go?" }],
+      },
+    ],
+  })
+
+  // Idle subagents whose worktrees were deleted; a failed read is retried on its next sync.
+  await page.route(/\/api\/session\/ses_request_idle_\d+\/form$/, (route) =>
+    route.fulfill({ status: 404, json: { message: "Location not found" } }),
+  )
+
+  const forms: string[] = []
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname
+
+    if (request.method() === "GET" && path.startsWith("/api/session/") && path.endsWith("/form")) forms.push(path)
+  })
+
+  await page.goto(sessionHref(sessionID))
+  await expectSessionTitle(page, title)
+  await expect(
+    page.locator('[data-component="dock-prompt"][data-kind="question"]').getByText("Which way should the subagent go?"),
+  ).toBeVisible()
+
+  // Every session update used to re-request the forms of the whole subagent tree.
+  await workspace.push(
+    [...idleIDs, sessionID].map(
+      (id, index) =>
+        // SAFETY: the fixture event matches the generated OpenCodeEvent shape for its type.
+        ({
+          id: `evt_request_rename_${index}`,
+          created: index + 2,
+          type: "session.renamed",
+          durable: { aggregateID: id, seq: 1, version: 1 },
+          data: { sessionID: id, title: id === sessionID ? "Renamed request docks" : `${id} renamed` },
+        }) as OpenCodeEvent,
+    ),
+  )
+  await expect(page.getByRole("heading", { name: "Renamed request docks", exact: true })).toBeVisible()
+  expect(forms.toSorted()).toEqual([`/api/session/${runningID}/form`, `/api/session/${sessionID}/form`].toSorted())
 })
 
 test("restores the draft caret before typing after a request dock closes", async ({ page }) => {
