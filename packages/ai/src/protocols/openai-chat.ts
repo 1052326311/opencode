@@ -306,7 +306,7 @@ export const OpenAIChatDelta = Schema.StructWithRest(
     content: optionalNull(Schema.String),
     refusal: optionalNull(Schema.String),
     reasoning_content: optionalNull(Schema.String),
-    reasoning: optionalNull(Schema.String),
+    reasoning: optionalNull(Schema.Union([Schema.String, JsonObject])),
     reasoning_text: optionalNull(Schema.String),
     reasoning_details: optionalNull(Schema.Unknown),
     tool_calls: optionalNull(Schema.Array(OpenAIChatToolCallDelta)),
@@ -993,6 +993,15 @@ const reasoningDelta = (
     if (field === undefined) continue
     const text = delta[field]
     if (typeof text === "string" && text.length > 0) return { field, text }
+    if (
+      field === "reasoning" &&
+      text &&
+      typeof text === "object" &&
+      "content" in text &&
+      typeof text.content === "string" &&
+      text.content.length > 0
+    )
+      return { field, text: text.content }
   }
   return undefined
 }

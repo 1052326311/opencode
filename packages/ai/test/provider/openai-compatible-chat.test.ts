@@ -653,6 +653,44 @@ describe("OpenAI-compatible Chat route", () => {
     }),
   )
 
+  it.effect("accepts structured reasoning alongside a streamed tool call", () =>
+    Effect.gen(function* () {
+      const response = yield* LLMClient.generate(request).pipe(
+        Effect.provide(
+          fixedResponse(
+            sseEvents(
+              deltaChunk({ reasoning: { content: "Checking the source.", encrypted_content: null, summary: null } }),
+              deltaChunk(
+                {
+                  content: "Looking it up.",
+                  reasoning: { content: null, encrypted_content: "gAAAA...", summary: null },
+                  tool_calls: [{ index: 0, id: "call_1", function: { name: "lookup", arguments: "{}" } }],
+                },
+                "tool_calls",
+              ),
+            ),
+          ),
+        ),
+      )
+
+      expect(response.text).toBe("Looking it up.")
+      expect(response.reasoning).toBe("Checking the source.")
+      expect(response.toolCalls).toMatchObject([{ id: "call_1", name: "lookup", input: {} }])
+      const replay = yield* compileRequest(
+        ai.request({
+          model,
+          messages: [response.message, Message.tool({ id: "call_1", name: "lookup", result: { found: true } })],
+        }),
+      )
+      expect(replay.body.messages[0]).toMatchObject({
+        role: "assistant",
+        reasoning: "Checking the source.",
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "lookup", arguments: "{}" } }],
+      })
+      expect(replay.body.messages[1]).toMatchObject({ role: "tool", tool_call_id: "call_1" })
+    }),
+  )
+
   it.effect("preserves late text and reasoning for replay without changing the finished tool call", () =>
     Effect.gen(function* () {
       const details = [{ type: "reasoning.encrypted", data: "opaque", id: "late-reasoning" }]
