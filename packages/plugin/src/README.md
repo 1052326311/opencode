@@ -123,6 +123,11 @@ await ctx.session.hook("retry", (event) => {
 })
 ```
 
+To run a registered slash command from a plugin, call
+`ctx.session.command({ sessionID, name, text })` with the command name (without `/`)
+and its input text. A prompt beginning with `/` does not run a command; slash
+recognition happens in the client.
+
 When a Session finishes model work with no pending input, the `experimental.idle` hook runs just before it goes idle.
 It is experimental: its name and shape may still change. It does not run after interruption, failure, or control-only
 work such as a manual compaction. Input the hook admits runs in the same execution instead of the Session going idle,
@@ -162,6 +167,11 @@ await ctx.tool.transform((tools) => {
   })
 })
 ```
+
+The example declares an `output` schema, so `execute` returns a matching `output`
+and model-visible `content`. For a tool without an `output` schema, return
+`{ content: text }` instead. Returning an `output` property without a declared
+schema fails with `Tool result declared output without an output schema`.
 
 ## Reloading A Domain
 
