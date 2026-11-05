@@ -34,6 +34,7 @@ function runAgent(input: CurrentAgent): RunAgent {
     description: input.description,
     mode: input.mode,
     hidden: input.hidden,
+    color: input.color,
   }
 }
 

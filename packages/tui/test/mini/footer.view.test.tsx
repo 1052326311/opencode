@@ -2125,6 +2125,31 @@ test.each(["Build", "Plan"])("working marker matches the %s label and prompt rai
   }
 })
 
+test.each([
+  ["Build", "#ff79c6"],
+  ["Plan", "#8be9fd"],
+])("mini uses the configured %s agent color in its footer and prompt rail", async (agent, color) => {
+  const app = await renderFooter({
+    currentAgent: agent,
+    agents: [
+      { id: "build", name: "Build", mode: "primary", hidden: false, color: "#ff79c6" },
+      { id: "plan", name: "Plan", mode: "primary", hidden: false, color: "#8be9fd" },
+    ],
+    tuiConfig: createTuiResolvedConfig({ animations: false }),
+    state: { phase: "running" },
+  })
+  try {
+    await app.renderOnce()
+    const spans = app.captureSpans().lines.flatMap((line) => line.spans)
+    const expected = RGBA.fromHex(color).toInts()
+    expect(spans.find((span) => span.text.includes(agent))?.fg.toInts()).toEqual(expected)
+    expect(spans.find((span) => span.text.includes("\u2503"))?.fg.toInts()).toEqual(expected)
+    expect(spans.find((span) => span.text === "\u25aa")?.fg.toInts()).toEqual(expected)
+  } finally {
+    app.cleanup()
+  }
+})
+
 test("spinner repaints keep the prompt instance, cursor state, and footer height stable", async () => {
   const app = await renderFooter({
     tuiConfig: createTuiResolvedConfig({ animations: true }),

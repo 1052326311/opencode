@@ -105,6 +105,7 @@ export type RunAgent = {
   description?: string
   mode: "subagent" | "primary" | "all"
   hidden: boolean
+  color?: string
 }
 
 export type RunReference = ReferenceListOutput["data"][number]
