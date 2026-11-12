@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { ByteSize, Effect, Exit, FileSystem } from "effect"
+import { AttachmentSizeLimitError } from "../../shared/ipc-rpc/files"
 import { nativeT } from "../native/translations"
 import {
   createPickedFileState,
@@ -67,7 +68,7 @@ export function createPickedFileAuthorizations(
     read: Effect.fn("DesktopFiles.readPickedFile")(function* (sender: number, token: string, path: string) {
       const claim = dispatch({ type: "read.requested", sender, token, path })
 
-      if (claim?.type !== "read") throw rejection(claim)
+      if (claim?.type !== "read") return yield* rejection(claim)
 
       const exit = yield* read(path, claim.maxBytes).pipe(
         Effect.onInterrupt(() =>
@@ -85,7 +86,7 @@ export function createPickedFileAuthorizations(
       if (settled?.type === "resolve" || (settled?.type === "reject" && settled.reason === "read-failed"))
         return yield* exit
 
-      throw rejection(settled)
+      return yield* rejection(settled)
     }),
     release(sender: number, token: string) {
       dispatch({ type: "selection.released", sender, token })
@@ -100,16 +101,24 @@ function rejection(reply: PickedFileCommand | undefined) {
   const reason: PickedRejectReason = reply?.type === "reject" ? reply.reason : "not-selected"
 
   if (reason === "size-limit")
-    return new Error(nativeT("desktop.picker.error.sizeLimit", { limit: MAX_ATTACHMENT_BYTES / 1024 / 1024 }))
+    return Effect.fail(
+      new AttachmentSizeLimitError({
+        message: nativeT("desktop.picker.error.sizeLimit", { limit: MAX_ATTACHMENT_BYTES / 1024 / 1024 }),
+      }),
+    )
 
-  return new Error(nativeT("desktop.picker.error.notSelected"))
+  return Effect.die(new Error(nativeT("desktop.picker.error.notSelected")))
 }
 
 export function assertAttachmentBudget(files: { size: number }[]) {
   const total = files.reduce((sum, file) => sum + file.size, 0)
 
-  if (total <= MAX_ATTACHMENT_BYTES) return
-  throw new Error(nativeT("desktop.picker.error.sizeLimit", { limit: MAX_ATTACHMENT_BYTES / 1024 / 1024 }))
+  if (total <= MAX_ATTACHMENT_BYTES) return Effect.void
+  return Effect.fail(
+    new AttachmentSizeLimitError({
+      message: nativeT("desktop.picker.error.sizeLimit", { limit: MAX_ATTACHMENT_BYTES / 1024 / 1024 }),
+    }),
+  )
 }
 
 export function readAttachment(filePath: string, maxBytes = MAX_ATTACHMENT_BYTES) {
@@ -120,7 +129,9 @@ export function readAttachment(filePath: string, maxBytes = MAX_ATTACHMENT_BYTES
       const info = yield* file.stat
 
       if (info.size > ByteSize.bytes(maxBytes))
-        throw new Error(nativeT("desktop.picker.error.sizeLimit", { limit: MAX_ATTACHMENT_BYTES / 1024 / 1024 }))
+        return yield* new AttachmentSizeLimitError({
+          message: nativeT("desktop.picker.error.sizeLimit", { limit: MAX_ATTACHMENT_BYTES / 1024 / 1024 }),
+        })
 
       const bytes = new Uint8Array(Number(info.size))
       let offset = 0

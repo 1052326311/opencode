@@ -100,7 +100,7 @@ function make(
           { concurrency: "unbounded" },
         )
 
-        assertAttachmentBudget(files)
+        yield* assertAttachmentBudget(files)
         const token = pickedFiles.grant(picker, result.filePaths)
 
         return token === undefined ? null : { token, files }

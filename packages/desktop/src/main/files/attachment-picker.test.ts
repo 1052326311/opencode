@@ -15,11 +15,18 @@ const run = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>) =>
   Effect.runPromise(effect.pipe(Effect.provide(NodeFileSystem.layer)))
 
 describe("attachment size limit", () => {
-  test("rejects the selection before files are read when its total exceeds the limit", () => {
-    expect(() =>
-      assertAttachmentBudget([{ size: MAX_ATTACHMENT_BYTES / 2 }, { size: MAX_ATTACHMENT_BYTES / 2 }]),
-    ).not.toThrow()
-    expect(() => assertAttachmentBudget([{ size: MAX_ATTACHMENT_BYTES }, { size: 1 }])).toThrow("20 MB limit")
+  test("rejects the selection before files are read when its total exceeds the limit", async () => {
+    await expect(
+      Effect.runPromise(
+        assertAttachmentBudget([{ size: MAX_ATTACHMENT_BYTES / 2 }, { size: MAX_ATTACHMENT_BYTES / 2 }]),
+      ),
+    ).resolves.toBeUndefined()
+    await expect(
+      Effect.runPromise(assertAttachmentBudget([{ size: MAX_ATTACHMENT_BYTES }, { size: 1 }])),
+    ).rejects.toMatchObject({
+      _tag: "DesktopAttachmentSizeLimit",
+      message: "Selected attachments exceed the 20 MB limit",
+    })
   })
 
   test("reads an approved file and rejects an oversized one before allocating its contents", async () => {
@@ -32,7 +39,10 @@ describe("attachment size limit", () => {
       expect(new TextDecoder().decode(await run(readAttachment(file)))).toBe("lorem ipsum")
       await writeFile(oversized, "")
       await truncate(oversized, MAX_ATTACHMENT_BYTES + 1)
-      await expect(run(readAttachment(oversized))).rejects.toThrow("20 MB limit")
+      await expect(run(readAttachment(oversized))).rejects.toMatchObject({
+        _tag: "DesktopAttachmentSizeLimit",
+        message: "Selected attachments exceed the 20 MB limit",
+      })
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
@@ -80,7 +90,9 @@ describe("picked file authorizations", () => {
     const authorizations = createPickedFileAuthorizations(read)
     const token = pick(authorizations, 1, ["a.txt"])
 
-    await expect(run(authorizations.read(2, token, "a.txt"))).rejects.toThrow("not selected")
+    expect(await run(Effect.exit(authorizations.read(2, token, "a.txt")))).toMatchObject({
+      cause: { reasons: [{ _tag: "Die" }] },
+    })
   })
 
   test("lets the renderer retry a file whose read failed, then reads it only once", async () => {
@@ -126,6 +138,18 @@ describe("picked file authorizations", () => {
     expect(picker === undefined ? "unopened" : authorizations.grant(picker, ["c.txt"])).toBeUndefined()
     expect(new TextDecoder().decode(await run(authorizations.read(2, kept, "b.txt")))).toBe("b.txt")
     expect([...watched.keys()]).toEqual([])
+  })
+
+  test("returns a typed size failure when a reader exceeds its claimed budget", async () => {
+    const authorizations = createPickedFileAuthorizations(() =>
+      Effect.succeed(new ArrayBuffer(MAX_ATTACHMENT_BYTES + 1)),
+    )
+    const token = pick(authorizations, 1, ["grown.txt"])
+
+    await expect(run(authorizations.read(1, token, "grown.txt").pipe(Effect.flip))).resolves.toMatchObject({
+      _tag: "DesktopAttachmentSizeLimit",
+      message: "Selected attachments exceed the 20 MB limit",
+    })
   })
 
   test("charges actual reads against the selection budget", async () => {
