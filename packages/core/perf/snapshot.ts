@@ -252,6 +252,7 @@ export async function session(snapshots: "on" | "off", ttft: number) {
   const { SessionStep } = await import("../src/session/runner/step")
   const { SessionTable } = await import("../src/session/sql")
   const { ToolOutput } = await import("../src/tool-output")
+  const { Permission } = await import("../src/permission")
 
   const model = SessionRunnerModel.resolved(
     LanguageModel.make({ id: "bench-model", provider: "test", route: OpenAIChat.route }),
@@ -334,6 +335,7 @@ export async function session(snapshots: "on" | "off", ttft: number) {
           TestLLM.testLayer(),
         ),
       ),
+      Effect.provide(Layer.mock(Permission.Service)({})),
       Effect.provide(Logger.layer([])),
     ),
   )

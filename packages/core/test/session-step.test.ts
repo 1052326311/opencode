@@ -25,13 +25,15 @@ import { LayerNode } from "@opencode/util/effect/layer-node"
 import { asc, eq } from "drizzle-orm"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { testEffect } from "./lib/effect"
+import { permissionLayer } from "./lib/permission"
 
 const it = testEffect(
-  Layer.merge(
+  Layer.mergeAll(
     AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, SessionProjector.node, ToolOutput.node]), [
       Bus.node.replace(Bus.configured({ persist: true })),
     ]),
     TestLLM.testLayer(),
+    permissionLayer(),
   ),
 )
 

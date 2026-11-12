@@ -1,5 +1,6 @@
 import os from "os"
 import { App } from "../../app.js"
+import { workflowLanguage } from "./gitlab-workflow.js"
 import { Clock, Deferred, Effect, Equal, Exit, Option, Schema, Semaphore } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import type { Server, ServerResponse } from "node:http"
@@ -339,12 +340,14 @@ export const GitLabPlugin = define({
             typeof evt.model.settings?.workflowDefinition === "string"
               ? evt.model.settings.workflowDefinition
               : undefined
-          const language = evt.sdk.workflowChat(gitlab.isWorkflowModel(id) ? id : "duo-workflow", {
-            featureFlags,
-            workflowDefinition,
+          evt.language = workflowLanguage(() => {
+            const language = evt.sdk.workflowChat(gitlab.isWorkflowModel(id) ? id : "duo-workflow", {
+              featureFlags,
+              workflowDefinition,
+            })
+            if (workflowRef) language.selectedModelRef = workflowRef
+            return language
           })
-          if (workflowRef) language.selectedModelRef = workflowRef
-          evt.language = language
           return
         }
         evt.language = evt.sdk.agenticChat(id, {

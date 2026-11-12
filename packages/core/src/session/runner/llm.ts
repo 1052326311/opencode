@@ -31,6 +31,7 @@ import { SessionRunnerRetry } from "./retry.js"
 import { SessionStep } from "./step.js"
 import { PersistentPty } from "../../persistent-pty/index.js"
 import { ToolOutput } from "../../tool-output.js"
+import { Permission } from "../../permission.js"
 import { Plugin } from "../../plugin.js"
 import { PluginHooks } from "../../plugin/hooks.js"
 import { MAX_STEPS_PROMPT } from "./max-steps.js"
@@ -465,6 +466,7 @@ export const node = makeLocationNode({
     Snapshot.node,
     PersistentPty.node,
     ToolOutput.node,
+    Permission.node,
     Database.node,
   ],
 })

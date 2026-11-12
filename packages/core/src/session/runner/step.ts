@@ -11,6 +11,7 @@ import type { Agent } from "@opencode/schema/agent"
 import { Cause, Clock, Data, Deferred, Effect, Exit, Fiber, Option, Stream } from "effect"
 import { SessionError } from "@opencode/schema/session-error"
 import { Bus } from "../../bus.js"
+import { AISDK } from "../../aisdk.js"
 import { Permission } from "../../permission.js"
 import { Snapshot } from "../../snapshot.js"
 import { Tool } from "../../tool.js"
@@ -73,6 +74,7 @@ export const make = Effect.gen(function* () {
   const llm = yield* LLMClient.Service
   const snapshots = yield* Snapshot.Service
   const toolOutput = yield* ToolOutput.Service
+  const permission = yield* Permission.Service
 
   const attempt = Effect.fn("SessionStep.attempt")(function* (input: Input) {
     // The start snapshot only has to exist before local tools run, which cannot happen before Step.Started,
@@ -103,6 +105,14 @@ export const make = Effect.gen(function* () {
       readonly fiber: Fiber.Fiber<void, Permission.DeclinedError | QuestionTool.CancelledError>
       readonly cancel: Cancel
     }> = []
+    const results = new Map<string, Deferred.Deferred<Tool.NormalizedResult, SessionModelRequest.ExecuteError>>()
+    const result = (id: string) => {
+      const existing = results.get(id)
+      if (existing) return existing
+      const pending = Deferred.makeUnsafe<Tool.NormalizedResult, SessionModelRequest.ExecuteError>()
+      results.set(id, pending)
+      return pending
+    }
     const interruptTools = Effect.suspend(() => Fiber.interruptAll(toolRuns.map((run) => run.fiber)))
     // A user's stop asks each tool awaiting `cancel` to stop and settle its own call, and interrupts every other
     // tool. A tool that does not settle in time is interrupted too. Teardown interrupts every tool.
@@ -133,6 +143,47 @@ export const make = Effect.gen(function* () {
     // Read to the end, not just the finish event, so the next request can reuse this response.
     // The span covers only the provider stream, so model time separates from tools, which run in this consumer.
     const providerStream = llm.stream(input.prepared.request, input.prepared.options).pipe(
+      Stream.provideService(AISDK.ToolContext, {
+        sessionID: input.sessionID,
+        result: (id) =>
+          Deferred.await(result(id)).pipe(
+            Effect.map((outcome) => ({
+              result: outcome.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n"),
+              metadata: outcome.metadata,
+            })),
+          ),
+        approve: (tools) =>
+          permission
+            .assert({
+              sessionID: input.sessionID,
+              agent: input.agent,
+              action: "workflow_tool_approval",
+              resources: tools.map((tool) => `${tool.name}: ${tool.args}`),
+              metadata: { tools },
+            })
+            .pipe(
+              Effect.exit,
+              Effect.flatMap((exit) => {
+                if (Exit.isSuccess(exit)) return Effect.succeed<{ approved: boolean }>({ approved: true })
+                if (
+                  exit.cause.reasons.every((reason) => {
+                    const error = Cause.isDieReason(reason)
+                      ? reason.defect
+                      : Cause.isFailReason(reason)
+                        ? reason.error
+                        : undefined
+                    return (
+                      error instanceof Permission.DeclinedError ||
+                      error instanceof Permission.BlockedError ||
+                      error instanceof Permission.CorrectedError
+                    )
+                  })
+                )
+                  return Effect.succeed<{ approved: boolean }>({ approved: false })
+                return Effect.failCause(exit.cause)
+              }),
+            ),
+      }),
       Stream.withSpan("LLM.stream", { attributes: modelAttributes }),
       Stream.runForEach((event) =>
         Effect.gen(function* () {
@@ -142,6 +193,10 @@ export const make = Effect.gen(function* () {
           yield* publisher.publish(event)
           if (firstOutputAt === undefined && publisher.record().outputStarted)
             firstOutputAt = yield* Clock.currentTimeMillis
+          if (event.type === "tool-input-error") {
+            yield* Deferred.fail(result(event.id), new Tool.Error({ message: "Invalid JSON tool input" }))
+            return
+          }
           if (event.type !== "tool-call" || event.providerExecuted) return
           const cancel = makeCancel()
           toolRuns.push({
@@ -150,7 +205,9 @@ export const make = Effect.gen(function* () {
             fiber: yield* Effect.uninterruptibleMask((restore) =>
               restore(executeTool(event, cancel)).pipe(
                 Effect.flatMap(toolOutput.truncate),
-                Effect.flatMap((outcome) => publisher.toolExecution(event.id, event.name, outcome)),
+                Effect.tap((outcome) => publisher.toolExecution(event.id, event.name, outcome)),
+                Effect.onExit((exit) => Deferred.done(result(event.id), exit)),
+                Effect.asVoid,
                 Effect.catchTag("Tool.Error", (error) =>
                   publisher.failTool(event.id, toSessionError(error), error.metadata).pipe(Effect.asVoid),
                 ),

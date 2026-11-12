@@ -64,6 +64,27 @@ export interface LanguageEvent {
   language?: LanguageModelV3
 }
 
+/** A provider's client-side tools still execute and settle in the Session runner. */
+export const ToolContext = Context.Reference<
+  | {
+      readonly sessionID: string
+      readonly result: (id: string) => Effect.Effect<{ result: string; metadata?: Record<string, unknown> }, unknown>
+      readonly approve: (tools: { name: string; args: string }[]) => Effect.Effect<{ approved: boolean }, unknown>
+    }
+  | undefined
+>("@opencode/AISDK/ToolContext", { defaultValue: () => undefined })
+
+type StreamModel = (
+  options: LanguageModelV3CallOptions,
+) => Effect.Effect<Awaited<ReturnType<LanguageModelV3["doStream"]>>, unknown, Scope.Scope>
+const streams = new WeakMap<LanguageModelV3, StreamModel>()
+
+/** Keep request effects out of the cached SDK model's mutable callbacks. */
+export function withStream(language: LanguageModelV3, stream: StreamModel) {
+  streams.set(language, stream)
+  return language
+}
+
 function wrapSSE(res: Response, ms: number, ctl: AbortController) {
   if (typeof ms !== "number" || ms <= 0) return res
   if (!res.body) return res
@@ -709,10 +730,16 @@ function streamLanguage(language: LanguageModelV3, options: LanguageModelV3CallO
     Stream.make(LLMEvent.stepStart({ index: state.step })),
     Stream.unwrap(
       Effect.gen(function* () {
-        const context = yield* Effect.context<never>()
+        const context = yield* Effect.context<Scope.Scope>()
+        const stream = streams.get(language)
+        const controller = new AbortController()
+        if (stream) yield* Effect.addFinalizer(() => Effect.sync(() => controller.abort()))
+        const start = () =>
+          stream
+            ? Effect.runPromiseWith(context)(stream({ ...options, abortSignal: controller.signal }))
+            : language.doStream(options)
         return yield* Effect.tryPromise({
-          try: () =>
-            http ? httpMiddleware.run({ http, context }, () => language.doStream(options)) : language.doStream(options),
+          try: () => (http ? httpMiddleware.run({ http, context }, start) : start()),
           catch: (error) => llmError(error, "request"),
         })
       }).pipe(
