@@ -42,6 +42,36 @@ opencode service start
   needed when diagnosing its lifecycle.
 </Callout>
 
+### Temporarily disable file watching
+
+If the server stalls or uses excessive CPU while files change, try disabling file watching to help isolate the cause.
+Save the setting on the shared service so it also applies when a desktop or CLI client starts the server.
+
+```bash
+opencode service set env OPENCODE_FILEWATCHER_DISABLE 1
+opencode service start
+```
+
+Setting the variable stops the running service. The next start uses it for every project and client connected to that
+service. Setting a variable only in a client's shell does not change a server that is already running.
+
+Automatic file updates and configuration reloading are disabled while this setting is active. Use it as a diagnostic
+workaround, then remove the saved value and start the service again to restore file watching.
+
+```bash
+opencode service unset env OPENCODE_FILEWATCHER_DISABLE
+opencode service start
+```
+
+For a foreground server, set the variable on the server process instead of saving a service setting.
+
+```bash
+OPENCODE_FILEWATCHER_DISABLE=1 opencode serve
+```
+
+The foreground example uses macOS or Linux shell syntax. `OPENCODE_DISABLE_FILEWATCHER` is also accepted as a legacy
+name, but `OPENCODE_FILEWATCHER_DISABLE` takes precedence when both are set.
+
 ## Allow a browser origin
 
 If a browser client on another origin cannot connect because of CORS, add the client's origin to the service configuration:
