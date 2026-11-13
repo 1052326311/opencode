@@ -147,6 +147,11 @@ export const make = Effect.gen(function* () {
         sessionID: input.sessionID,
         result: (id) =>
           Deferred.await(result(id)).pipe(
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                if (!Exit.hasInterrupts(exit)) publisher.toolResultDelivered(id)
+              }),
+            ),
             Effect.map((outcome) => ({
               result: outcome.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n"),
               metadata: outcome.metadata,

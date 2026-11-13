@@ -322,7 +322,8 @@ it.live("executes and bounds a workflow tool once, persists it, and replays its 
     const fixture = yield* setup()
     yield* (yield* ToolOutput.Service).transform((editor) => editor.configure({ maxLines: 2 }))
     yield* Effect.promise(() => Bun.write(`${fixture.directory.path}/read.txt`, "one\ntwo\nthree\n"))
-    const { message, sessionID } = yield* fixture.turn("read")
+    const { result, message, sessionID } = yield* fixture.turn("read")
+    expect(result).toEqual(SessionStep.Outcome.Completed({ needsContinuation: false }))
     expect(fixture.executions()).toBe(1)
     expect(fixture.replies).toHaveLength(1)
     expect(fixture.replies[0]).toMatchObject({ requestID: "call-read", plainTextResponse: { error: null } })
@@ -372,7 +373,8 @@ for (const disabled of [false, true]) {
     Effect.gen(function* () {
       const fixture = yield* setup()
       yield* Effect.promise(() => Bun.write(`${fixture.directory.path}/unknown.txt`, "must not leak"))
-      const { message } = yield* fixture.turn("unknown", undefined, disabled)
+      const { result, message } = yield* fixture.turn("unknown", undefined, disabled)
+      expect(result).toEqual(SessionStep.Outcome.Completed({ needsContinuation: false }))
       expect(fixture.executions()).toBe(0)
       expect(fixture.replies[0]?.plainTextResponse.response).toBe("")
       expect(fixture.replies[0]?.plainTextResponse.error).toContain(disabled ? "maximum agent steps" : "No tool named")
@@ -408,12 +410,17 @@ it.live("isolates concurrent Sessions and reuses only their own workflow on the 
     for (const goal of ["alpha", "beta"])
       yield* Effect.promise(() => Bun.write(`${fixture.directory.path}/${goal}.txt`, goal))
     const turns = yield* Effect.all([fixture.turn("alpha"), fixture.turn("beta")], { concurrency: "unbounded" })
+    expect(turns.map((turn) => turn.result)).toEqual([
+      SessionStep.Outcome.Completed({ needsContinuation: false }),
+      SessionStep.Outcome.Completed({ needsContinuation: false }),
+    ])
     expect(fixture.creations()).toBe(2)
     expect(fixture.replies.map((reply) => reply.plainTextResponse.response).sort()).toEqual(["alpha", "beta"])
     expect(fixture.starts.map((start) => start.workflowID).sort()).toEqual(["1", "2"])
     for (const start of fixture.starts)
       expect(start.additional_context).toContainEqual(expect.objectContaining({ content: `System for ${start.goal}` }))
-    yield* fixture.turn("alpha", turns[0]!.sessionID)
+    const next = yield* fixture.turn("alpha", turns[0]!.sessionID)
+    expect(next.result).toEqual(SessionStep.Outcome.Completed({ needsContinuation: false }))
     expect(fixture.creations()).toBe(2)
     expect(fixture.starts[2]?.workflowID).toBe(fixture.starts.find((start) => start.goal === "alpha")!.workflowID)
     expect(fixture.executions()).toBe(3)
@@ -448,7 +455,8 @@ it.live("never runs the SDK write fallback after a local executor error", () =>
     const fixture = yield* setup()
     const target = `${fixture.directory.path}/protected.txt`
     yield* Effect.promise(() => Bun.write(target, "original"))
-    yield* fixture.turn("fallback")
+    const { result } = yield* fixture.turn("fallback")
+    expect(result).toEqual(SessionStep.Outcome.Completed({ needsContinuation: false }))
     expect(fixture.replies[0]?.plainTextResponse.error).toBe("OpenCode tool failed: Unknown tool: write")
     expect(yield* Effect.promise(() => Bun.file(target).text())).toBe("original")
   }),
@@ -481,7 +489,8 @@ it.live("preserves a local permission decline without reading the file", () =>
 it.live("returns malformed input to the workflow without waiting for an execution that cannot start", () =>
   Effect.gen(function* () {
     const fixture = yield* setup()
-    const { message } = yield* fixture.turn("malformed").pipe(Effect.timeout("2 seconds"))
+    const { result, message } = yield* fixture.turn("malformed").pipe(Effect.timeout("2 seconds"))
+    expect(result).toEqual(SessionStep.Outcome.Completed({ needsContinuation: false }))
     expect(fixture.executions()).toBe(0)
     expect(fixture.replies[0]?.plainTextResponse.error).toContain("Invalid JSON tool input")
     expect(message.content.filter((part) => part.type === "tool")).toMatchObject([

@@ -27,6 +27,7 @@ import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNodePlatform } from "@opencode/core/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "@opencode/core/bus"
+import { AISDK } from "@opencode/core/aisdk"
 import { Event } from "@opencode/schema/event"
 import { App } from "@opencode/core/app"
 import { Permission } from "@opencode/core/permission"
@@ -77,7 +78,21 @@ import { SessionSystemPrompt } from "@opencode/core/session/system-prompt"
 import { ID, Model } from "@opencode/core/model"
 import { Location } from "@opencode/core/location"
 import { Provider } from "@opencode/core/provider"
-import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Queue, Schema, Scope, Stream, Tracer } from "effect"
+import {
+  Cause,
+  Context,
+  DateTime,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Queue,
+  Schema,
+  Scope,
+  Stream,
+  Tracer,
+} from "effect"
 import { TestClock } from "effect/testing"
 import { and, asc, desc, eq, sql } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
@@ -1009,6 +1024,50 @@ const watchRename = Effect.fnUntraced(function* (sessionID: Session.ID) {
 })
 
 describe("SessionRunnerLLM", () => {
+  for (const delivered of [0, 1, 2])
+    scenario(
+      `continues only when a local result is outstanding after delivering ${delivered} of two to the workflow`,
+      function* (s) {
+        yield* s.admit("Read once")
+        yield* s.llm.push(
+          Stream.make(
+            LLMEvent.toolCall({ id: "call-first", name: "echo", input: { text: "first" } }),
+            LLMEvent.toolCall({ id: "call-second", name: "echo", input: { text: "second" } }),
+          ).pipe(
+            Stream.concat(
+              Stream.unwrap(
+                Effect.gen(function* () {
+                  if (delivered > 0) {
+                    const host = yield* AISDK.ToolContext
+                    expect(host?.sessionID).toBe(sessionID)
+                    expect(yield* host!.result("call-first").pipe(Effect.orDie)).toMatchObject({ result: "first" })
+                    if (delivered === 2)
+                      expect(yield* host!.result("call-second").pipe(Effect.orDie)).toMatchObject({ result: "second" })
+                  }
+                  return Stream.fromIterable(TestLLM.text("Workflow finished", "text-workflow"))
+                }),
+              ),
+            ),
+          ),
+          TestLLM.text("Continuation", "text-continuation"),
+        )
+
+        yield* s.resume
+
+        expect(s.requests).toHaveLength(delivered === 2 ? 1 : 2)
+        expect(s.executions).toEqual(["first", "second"])
+        expect((yield* s.context).filter((message) => message.type === "assistant")).toHaveLength(
+          delivered === 2 ? 1 : 2,
+        )
+        if (delivered !== 2) return
+        // A later user message must still start a new request in the same Session.
+        yield* s.admit("Next request")
+        yield* s.resume
+        expect(s.requests).toHaveLength(2)
+        expect(s.executions).toEqual(["first", "second"])
+      },
+    )
+
   scenario("generates the title while the first model step is still running", function* (s) {
     yield* prepareTitleGeneration
 

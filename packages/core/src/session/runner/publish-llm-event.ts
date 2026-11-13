@@ -109,6 +109,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     called: boolean
     settled: boolean
     providerExecuted: boolean
+    resultDelivered?: boolean
     progress?: Tool.Metadata
     input?: InputExcerpt
     malformed?: boolean
@@ -599,6 +600,11 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     publish: (event: LLMEvent): Effect.Effect<void> => publish(event),
     progress,
     toolExecution,
+    // A workflow can consume a local result within this same model request.
+    toolResultDelivered: (id: string) => {
+      const tool = tools.get(id)
+      if (tool) tool.resultDelivered = true
+    },
     flush,
     failAssistant,
     failTool,
@@ -614,7 +620,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
       finish: stepSettlement,
       needsContinuation: Iterable.some(
         tools.values(),
-        (tool) => !tool.providerExecuted && (tool.called || tool.settled),
+        (tool) => !tool.providerExecuted && !tool.resultDelivered && (tool.called || tool.settled),
       ),
     }),
     startAssistant,
