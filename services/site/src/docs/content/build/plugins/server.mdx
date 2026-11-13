@@ -1003,6 +1003,20 @@ const registration = await ctx.tool.transform((editor) => {
 })
 ```
 
+Choose names that stay distinct after normalization. Tool names keep letters,
+numbers, `-`, and `_`; other characters become `_`. Dots in `options.namespace`
+become `_`, and the effective name is `<namespace>_<tool>`.
+
+| Registration                                                  | Effective name   |
+| ------------------------------------------------------------- | ---------------- |
+| Tool `greeting` in namespace `acme`                           | `acme_greeting`  |
+| Tool `deploy.staging` or `deploy_staging` without a namespace | `deploy_staging` |
+| Tool `c` in namespace `a.b`, or tool `b_c` in namespace `a`   | `a_b_c`          |
+
+The latter two pairs collide even though their original names differ. The later
+valid registration replaces the earlier one. Check `ctx.tool.list()` for the
+effective names and descriptions of the active tools.
+
 Promise tool executors receive `context.signal`. Pass it to cancellable work such as `fetch` so stopping the Session
 also stops the underlying operation.
 
