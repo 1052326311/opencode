@@ -234,6 +234,18 @@ results without adding every intermediate value to the model context.
 Read package.json and README.md in parallel, then return their relevant setup details.
 ```
 
+Code Mode interprets a supported subset of JavaScript, rather than running a
+Node.js or browser script. Standard globals are not all available. For example,
+`globalThis.JSON.parse(...)` fails because `globalThis` is not defined. Call the
+supported global directly instead.
+
+```js
+return JSON.parse('{"ready":true}')
+```
+
+An `Unknown identifier 'globalThis'` error comes from the program's reference to
+that global. It does not mean a tool called by the program failed.
+
 The runtime has no direct filesystem access, imports, or timers. It provides
 `fetch` for HTTP requests; everything else goes through tools in its catalog.
 Denying `execute` with resource `*` removes Code Mode. The tools it would reach,
