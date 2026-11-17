@@ -6,7 +6,7 @@ import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { getOpenCodeTheme } from "../../../src/theme"
 import opencodeSource from "../../../src/theme/assets/opencode.json" with { type: "json" }
 import type { ThemeV1Json } from "@opencode/theme/tui/v1"
-import { ConfigProvider } from "../../../src/config"
+import { ConfigProvider, type Info, type Interface, useConfig } from "../../../src/config"
 import { ThemeContextProvider, ThemeProvider, type ThemeError, useTheme, useThemes } from "../../../src/context/theme"
 
 async function wait(fn: () => boolean) {
@@ -16,6 +16,73 @@ async function wait(fn: () => boolean) {
     await Bun.sleep(10)
   }
 }
+
+test.each(["theme", "name"] as const)("restores the default when configured %s is removed", async (field) => {
+  const info: Info = { theme: { mode: "light" } }
+  const service: Interface = {
+    get: async () => structuredClone(info),
+    update: async (update) => {
+      update(info)
+      return structuredClone(info)
+    },
+  }
+  let config: ReturnType<typeof useConfig> | undefined
+  let themes: ReturnType<typeof useThemes> | undefined
+
+  function Probe() {
+    config = useConfig()
+    const value = useThemes()
+    themes = value
+    return (
+      <text fg={value.current.text.base}>
+        {value.selected} {value.current.text.base.toString()}
+      </text>
+    )
+  }
+
+  const app = await testRender(
+    () => (
+      <ConfigProvider config={createTuiResolvedConfig(info)} service={service}>
+        <ThemeProvider mode="dark" source={{ discover: async () => ({}) }}>
+          <Probe />
+        </ThemeProvider>
+      </ConfigProvider>
+    ),
+    { width: 60, height: 2 },
+  )
+
+  try {
+    await wait(() => themes?.ready === true)
+    if (!config || !themes) throw new Error("Theme provider is not mounted")
+    expect(themes.selected).toBe("opencode")
+    const color = themes.current.text.base.toString()
+    for (const name of ["tokyonight", "catppuccin"]) {
+      await config.update((draft) => {
+        draft.theme = { name, mode: "light" }
+      })
+      await app.renderOnce()
+      expect(themes.selected).toBe(name)
+      expect(app.captureCharFrame()).toContain(name)
+      expect(themes.current.text.base.toString()).not.toBe(color)
+    }
+    await config.update((draft) => {
+      if (field === "theme") delete draft.theme
+      if (field === "name") delete draft.theme.name
+    })
+    await app.renderOnce()
+    expect(themes.selected).toBe("opencode")
+    expect(themes.current.text.base.toString()).toBe(color)
+    expect(app.captureCharFrame()).toContain(`opencode ${color}`)
+    expect(themes.mode()).toBe("light")
+    expect(themes.locked()).toBeTrue()
+    await config.update((draft) => {
+      draft.animations = false
+    })
+    expect(themes.selected).toBe("opencode")
+  } finally {
+    app.renderer.destroy()
+  }
+})
 
 test("uses an available mode while retaining the pinned preference", async () => {
   const opencodeV1 = opencodeSource as ThemeV1Json

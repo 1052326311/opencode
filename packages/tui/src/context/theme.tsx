@@ -142,8 +142,7 @@ const themeContext = createSimpleContext({
     )
 
     createEffect(() => {
-      const theme = config.theme?.name
-      if (!theme) return
+      const theme = config.theme?.name ?? "opencode"
       setStore("active", theme)
       if (theme === "system") refreshPalette()
     })
