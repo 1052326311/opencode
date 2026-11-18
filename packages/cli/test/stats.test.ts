@@ -127,6 +127,16 @@ describe("stats rendering", () => {
     expect(output).not.toContain("no tool calls")
   })
 
+  test.each([
+    { totals: { calls: 0, succeeded: 0, failed: 0, unfinished: 0 }, summary: "no tool calls" },
+    { totals: { calls: 1, succeeded: 0, failed: 0, unfinished: 1 }, summary: "1 unfinished tool call" },
+    { totals: { calls: 2, succeeded: 0, failed: 0, unfinished: 2 }, summary: "2 unfinished tool calls" },
+    { totals: { calls: 3, succeeded: 1, failed: 1, unfinished: 1 }, summary: "50.0% tool success" },
+  ])("renders the tool summary from collected outcomes: %j", ({ totals, summary }) => {
+    const output = renderStats({ ...stats, tools: { mode: "summary", totals } }, options())
+    expect(output).toContain(`${summary} · 2 active days`)
+  })
+
   test("labels activity when terminal width truncates the requested range", () => {
     const output = renderStats(
       { ...stats, range: { from: Date.UTC(2020, 0, 1), to: Date.UTC(2026, 0, 8) } },

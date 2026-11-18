@@ -103,9 +103,11 @@ export function renderStats(stats: SessionStatsInfo, options: RenderOptions) {
     .join(" · ")
   const toolSummary = !toolTotals
     ? "tool stats unavailable"
-    : toolRate === undefined
+    : toolTotals.calls === 0
       ? "no tool calls"
-      : `${style(formatPercent(toolRate), primary, options.color)} tool success`
+      : toolRate === undefined
+        ? metricCount(toolTotals.unfinished, "unfinished tool call", options.color)
+        : `${style(formatPercent(toolRate), primary, options.color)} tool success`
   const details = options.models || options.tools || options.cost
   const empty = stats.sessions === 0 && stats.prompts === 0 && stats.steps === 0
   const heading = `${style("opencode stats", primary, options.color)} ${style(`· ${options.label} · ${options.scope}`, "2", options.color)}`
